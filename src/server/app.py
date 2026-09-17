@@ -52,6 +52,40 @@ instruments_cfg = load_yaml("instruments.yaml")
 engine = ICTPredictiveEngine(settings_cfg)
 data_client = UpstoxClient()
 notifier = TelegramNotifier()
+# Set of already notified signal signatures: {symbol_time_signal_price}
+notified_signals = set()
+
+def dispatch_alerts_for_result(instrument_name: str, result: Dict[str, Any], latest_timestamp: int):
+    if not notifier.is_enabled() or not result:
+        return
+    # 1. Regular ICT Signals
+    for s in result.get("signals", []):
+        sig_time = s.get("time", 0)
+        # Only notify signals that are current or recent
+        if abs(latest_timestamp - sig_time) <= 1800:
+            sig_id = f"{instrument_name}_{sig_time}_{s.get('signal')}_{s.get('entry_price')}"
+            if sig_id not in notified_signals:
+                notified_signals.add(sig_id)
+                notifier.notify_signal(instrument_name, s)
+                logger.info(f"Dispatched Telegram alert for {instrument_name} {s.get('signal')}")
+
+    # 2. Silver Bullet Events
+    for ev in result.get("silver_bullet_events", []):
+        ev_time = ev.get("time", 0)
+        if abs(latest_timestamp - ev_time) <= 1800:
+            ev_id = f"{instrument_name}_{ev_time}_{ev.get('type')}_{ev.get('price')}"
+            if ev_id not in notified_signals:
+                notified_signals.add(ev_id)
+                notifier.notify_silver_bullet(instrument_name, ev)
+                logger.info(f"Dispatched Telegram Silver Bullet alert for {instrument_name} {ev.get('type')}")
+
+@app.get("/api/test-telegram")
+async def test_telegram():
+    if not notifier.is_enabled():
+        return {"status": "error", "message": "Telegram is not configured in .env"}
+    ok = notifier.send_message("🔔 <b>ICT Predictive Signals Engine</b>: Test Telegram alert received successfully!")
+    return {"status": "success" if ok else "failed", "sent": ok}
+
 
 # Active WebSocket connections
 active_connections: List[WebSocket] = []
@@ -118,6 +152,11 @@ async def get_chart_data(
         }
         for c in candles
     ]
+
+    # Dispatch Telegram notifications if fresh predictive signals detected
+    inst_name = instrument_key.split("|")[-1] if "|" in instrument_key else instrument_key
+    latest_ts = formatted_candles[-1]["time"] if formatted_candles else 0
+    dispatch_alerts_for_result(inst_name, result, latest_ts)
 
     return {
         "instrument_key": instrument_key,

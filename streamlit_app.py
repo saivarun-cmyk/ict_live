@@ -1,11 +1,13 @@
 """
 Streamlit Cloud Entrypoint for ICT Predictive Signals Engine.
-Supports deployment to Streamlit Community Cloud (share.streamlit.io).
+Delivers the exact same high-definition TradingView native UI inside Streamlit Cloud,
+with real-time Upstox data, ICT order flow calculations, and automated Telegram alerts.
 """
 
 import os
 import json
 import yaml
+import time
 from datetime import datetime
 import zoneinfo
 import streamlit as st
@@ -13,24 +15,47 @@ import streamlit.components.v1 as components
 
 from src.indicator.engine import ICTPredictiveEngine
 from src.data.upstox_client import UpstoxClient
+from src.alerts.telegram import TelegramNotifier
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
-# Configure Streamlit page
 st.set_page_config(
     page_title="ICT Predictive Signals Engine",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# Load secrets from st.secrets if available (Streamlit Cloud), fallback to os.environ / .env
+# Streamlit CSS: Remove default margins and headers to give 100% full-screen TradingView space
+st.markdown("""
+<style>
+  #MainMenu {visibility: hidden !important; display: none !important;}
+  header {visibility: hidden !important; display: none !important;}
+  footer {visibility: hidden !important; display: none !important;}
+  div[data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+  div[data-testid="stDecoration"] {visibility: hidden !important; display: none !important;}
+  div[data-testid="stStatusWidget"] {visibility: hidden !important; display: none !important;}
+  .block-container {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+  iframe {
+    width: 100vw !important;
+    height: 100vh !important;
+    border: none !important;
+    display: block !important;
+  }
+</style>
+""", unsafe_allow_html=True)
+
+# Helper to read secrets from st.secrets (Streamlit Cloud) or .env / os.environ
 def get_secret(key: str, default: str = "") -> str:
     if hasattr(st, "secrets") and key in st.secrets:
         return str(st.secrets[key])
     return os.getenv(key, default)
 
-# Set environment variables for engine / client
 for k in ["UPSTOX_ACCESS_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "MOCK_REPLAY"]:
     val = get_secret(k)
     if val:
@@ -48,145 +73,527 @@ def load_config():
 
 settings_cfg, instruments_cfg = load_config()
 
-# Sidebar: Controls
-st.sidebar.title("ICT Engine Controls")
-
-# Market Hours status
-now_ist = datetime.now(tz=IST)
-weekday = now_ist.weekday()
-minutes = now_ist.hour * 60 + now_ist.minute
-is_open = (weekday < 5) and (9 * 60 + 15 <= minutes < 15 * 60 + 30)
-
-if is_open:
-    st.sidebar.success(f"🟢 MARKET OPEN ({now_ist.strftime('%H:%M:%S')} IST)")
-else:
-    st.sidebar.error(f"🔴 MARKET CLOSED ({now_ist.strftime('%H:%M:%S')} IST)")
-
-# Asset selection
-indices = [idx["name"] for idx in instruments_cfg.get("indices", [])]
-selected_name = st.sidebar.selectbox("Select Asset", indices, index=0)
-
-asset_map = {idx["name"]: idx["instrument_key"] for idx in instruments_cfg.get("indices", [])}
-instrument_key = asset_map.get(selected_name, "NSE_INDEX|Nifty 50")
-
-# Timeframe selection
-timeframe = st.sidebar.radio("Timeframe", ["1m", "5m", "15m"], index=1, horizontal=True)
-
-# Toggles
-st.sidebar.markdown("### Indicators")
-show_fvg = st.sidebar.checkbox("FVG Zones", value=True)
-show_ob = st.sidebar.checkbox("Order Blocks & Breakers", value=True)
-show_liq = st.sidebar.checkbox("PDH / PDL & Liquidity", value=True)
-show_signals = st.sidebar.checkbox("Signals & Trades", value=True)
-
-# Engine initialization
 engine = ICTPredictiveEngine(settings_cfg)
 data_client = UpstoxClient()
+notifier = TelegramNotifier()
 
-tf_map = {"1m": "1minute", "5m": "5minute", "15m": "15minute"}
-interval = tf_map.get(timeframe, "5minute")
+# Maintain alerted signals in session state so we don't spam duplicate alerts
+if "notified_signals" not in st.session_state:
+    st.session_state["notified_signals"] = set()
 
-with st.spinner(f"Evaluating ICT order flow for {selected_name}..."):
-    candles = data_client.fetch_historical_candles(instrument_key, interval=interval, days=5)
-    htf_candles = data_client.fetch_historical_candles(instrument_key, interval="30minute", days=10)
-    result = engine.evaluate(candles, htf_candles=htf_candles)
+def dispatch_alerts_for_result(instrument_name: str, result: dict, latest_timestamp: int):
+    if not notifier.is_enabled() or not result:
+        return
+    for s in result.get("signals", []):
+        sig_time = s.get("time", 0)
+        if abs(latest_timestamp - sig_time) <= 1800:
+            sig_id = f"{instrument_name}_{sig_time}_{s.get('signal')}_{s.get('entry_price')}"
+            if sig_id not in st.session_state["notified_signals"]:
+                st.session_state["notified_signals"].add(sig_id)
+                notifier.notify_signal(instrument_name, s)
 
-if not candles:
-    st.error("No candle data available.")
-    st.stop()
+    for ev in result.get("silver_bullet_events", []):
+        ev_time = ev.get("time", 0)
+        if abs(latest_timestamp - ev_time) <= 1800:
+            ev_id = f"{instrument_name}_{ev_time}_{ev.get('type')}_{ev.get('price')}"
+            if ev_id not in st.session_state["notified_signals"]:
+                st.session_state["notified_signals"].add(ev_id)
+                notifier.notify_silver_bullet(instrument_name, ev)
 
-last_candle = candles[-1]
-prev_candle = candles[-2] if len(candles) > 1 else last_candle
-diff = last_candle.close - prev_candle.close
-pct = (diff / prev_candle.close) * 100
+# Preload data for all 3 indices (NIFTY 50, BANK NIFTY, SENSEX)
+indices = instruments_cfg.get("indices", [])
+preloaded_data = {}
 
-db = result.get("dashboard", {})
+for item in indices:
+    key = item["instrument_key"]
+    name = item["name"]
+    candles = data_client.fetch_historical_candles(key, interval="5minute", days=5)
+    htf = data_client.fetch_historical_candles(key, interval="30minute", days=10)
+    res = engine.evaluate(candles, htf_candles=htf)
+    
+    latest_ts = candles[-1].timestamp if candles else 0
+    dispatch_alerts_for_result(name, res, latest_ts)
 
-# Top metric summary cards
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("Last Price", f"{last_candle.close:.2f}", f"{diff:+.2f} ({pct:+.2f}%)")
-c2.metric("Signal", db.get("signal", "HOLD"))
-c3.metric("IPDA Phase", db.get("ipda_phase", "--"))
-c4.metric("Last Model", db.get("last_model", "--"))
-c5.metric("CISD State", db.get("cisd_state", "--"))
-c6.metric("HTF Bias", db.get("htf_bias", "--"))
-
-# Prepare formatted data for lightweight chart embed
-formatted_candles = [
-    {
-        "time": c.timestamp,
-        "open": c.open,
-        "high": c.high,
-        "low": c.low,
-        "close": c.close,
-        "volume": c.volume
+    preloaded_data[key] = {
+        "name": name,
+        "symbol": item["symbol"],
+        "candles": [
+            {
+                "time": c.timestamp,
+                "open": c.open,
+                "high": c.high,
+                "low": c.low,
+                "close": c.close,
+                "volume": c.volume
+            }
+            for c in candles
+        ],
+        "indicators": res
     }
-    for c in candles
-]
 
-candles_json = json.dumps(formatted_candles)
-indicators_json = json.dumps(result)
-options_json = json.dumps({
-    "showFVG": show_fvg,
-    "showOB": show_ob,
-    "showLiq": show_liq,
-    "showSignals": show_signals
-})
+# Read CSS and chart.js
+with open(os.path.join(BASE_DIR, "web", "css", "style.css")) as f:
+    css_content = f.read()
 
-# Read chart.js code
-with open(os.path.join(BASE_DIR, "web", "js", "chart.js"), "r") as f:
-    chart_js_code = f.read()
+with open(os.path.join(BASE_DIR, "web", "js", "chart.js")) as f:
+    chart_js_content = f.read()
 
-# Build self-contained HTML embed with TradingView Lightweight Charts & ICT Series Primitive
-html_content = f"""
-<!DOCTYPE html>
-<html>
+data_json = json.dumps(preloaded_data)
+
+# Full self-contained TradingView application matching web/index.html 100%
+full_html = f"""<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ICT Predictive Signals Engine</title>
+  <!-- Lightweight Charts v4.2.1 -->
   <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
   <style>
-    body {{ margin: 0; padding: 0; background: #131722; font-family: -apple-system, BlinkMacSystemFont, sans-serif; overflow: hidden; }}
-    #chartStage {{ width: 100vw; height: 680px; position: relative; }}
+    {css_content}
+    html, body {{
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      margin: 0;
+      padding: 0;
+    }}
+    .tv-app-container {{
+      width: 100vw;
+      height: 100vh;
+    }}
+    .tv-chart-viewport {{
+      height: calc(100vh - 48px);
+    }}
   </style>
 </head>
 <body>
-  <div id="chartStage"></div>
+  <div class="tv-app-container">
+    <!-- TOP TOOLBAR -->
+    <header class="tv-top-toolbar">
+      <div class="tv-toolbar-left">
+        <div class="tv-brand">
+          <div class="tv-logo-badge">TV</div>
+          <span class="tv-title">ICT Predictive Signals</span>
+        </div>
+
+        <div class="tv-divider"></div>
+
+        <!-- QUICK INSTRUMENT SWITCHER -->
+        <div class="tv-instruments-bar" id="indicesButtons">
+          <button class="tv-tool-btn active" data-symbol="NSE_INDEX|Nifty 50">NIFTY 50</button>
+          <button class="tv-tool-btn" data-symbol="NSE_INDEX|Nifty Bank">BANK NIFTY</button>
+          <button class="tv-tool-btn" data-symbol="BSE_INDEX|SENSEX">SENSEX</button>
+        </div>
+
+        <div class="tv-divider"></div>
+
+        <!-- TIMEFRAME SELECTOR -->
+        <div class="tv-timeframe-bar" id="tfButtons">
+          <button class="tv-tf-btn" data-tf="1m">1m</button>
+          <button class="tv-tf-btn active" data-tf="5m">5m</button>
+          <button class="tv-tf-btn" data-tf="15m">15m</button>
+        </div>
+      </div>
+
+      <!-- RIGHT CONTROLS: OVERLAYS & LIVE STATUS -->
+      <div class="tv-toolbar-right">
+        <!-- INDICATOR OVERLAY CHIPS -->
+        <div class="tv-toggle-group">
+          <label class="tv-chip active" id="toggleFVG">
+            <input type="checkbox" checked>
+            <span class="tv-chip-dot fvg"></span> FVG Zones
+          </label>
+          <label class="tv-chip active" id="toggleOB">
+            <input type="checkbox" checked>
+            <span class="tv-chip-dot ob"></span> Order Blocks
+          </label>
+          <label class="tv-chip active" id="toggleLiq">
+            <input type="checkbox" checked>
+            <span class="tv-chip-dot liq"></span> PDH / PDL
+          </label>
+          <label class="tv-chip active" id="toggleSignals">
+            <input type="checkbox" checked>
+            <span class="tv-chip-dot sig"></span> Signals & Trades
+          </label>
+        </div>
+
+        <div class="tv-divider"></div>
+
+        <!-- DYNAMIC MARKET STATUS BADGE -->
+        <div id="marketStatusBadge" class="tv-market-badge closed" title="NSE / BSE Trading Session: 09:15 - 15:30 IST (Mon-Fri)">
+          <span class="tv-market-dot"></span>
+          <div class="tv-market-info">
+            <span id="marketStatusText" class="tv-market-title">MARKET CLOSED</span>
+            <span id="marketStatusSub" class="tv-market-sub">Opens 09:15 AM IST</span>
+          </div>
+        </div>
+
+        <button id="refreshBtn" class="tv-icon-btn" title="Refresh Feed">
+          <i data-lucide="rotate-cw"></i>
+        </button>
+
+        <div class="tv-divider"></div>
+
+        <button id="zoomInBtn" class="tv-icon-btn" title="Zoom In (+)">
+          <i data-lucide="zoom-in"></i>
+        </button>
+        <button id="zoomOutBtn" class="tv-icon-btn" title="Zoom Out (-)">
+          <i data-lucide="zoom-out"></i>
+        </button>
+        <button id="resetZoomBtn" class="tv-icon-btn" title="Reset View (Auto)">
+          <i data-lucide="maximize-2"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- CHART WORKSPACE -->
+    <div class="tv-chart-viewport">
+      <!-- TOP ASYNC PROGRESS LOADER -->
+      <div id="chartLoadingBar" class="tv-loading-bar"></div>
+
+      <!-- CURRENT TICKER INFO OVERLAY (Top-Left of chart) -->
+      <div class="tv-ticker-hud">
+        <div class="tv-ticker-main">
+          <span id="activeTickerTitle" class="tv-symbol-name">NIFTY 50</span>
+          <span class="tv-tf-tag" id="activeTimeframeBadge">5m</span>
+          <span id="activePrice" class="tv-last-price">--</span>
+          <span id="priceChange" class="tv-chg-pill neutral">--</span>
+        </div>
+        <div class="tv-ticker-meta">
+          <span>O: <b id="barO">--</b></span>
+          <span>H: <b id="barH">--</b></span>
+          <span>L: <b id="barL">--</b></span>
+          <span>C: <b id="barC">--</b></span>
+        </div>
+      </div>
+
+      <!-- PINE SCRIPT TOP-RIGHT FLOATING TABLE HUD (1:1 with TradingView Pine script) -->
+      <div class="tv-pine-table-hud">
+        <div class="tv-pine-table-header">
+          <div class="tv-pine-title">
+            <span class="tv-pine-logo">▲</span> ICT Predictive
+          </div>
+          <span id="dashSignalBadge" class="tv-pine-badge hold">HOLD</span>
+        </div>
+        <table class="tv-pine-table">
+          <tbody>
+            <tr>
+              <td class="tv-td-lbl">Signal</td>
+              <td class="tv-td-val" id="dashSignal">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">IPDA Phase</td>
+              <td class="tv-td-val" id="dashIPDA">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Last Entry Model</td>
+              <td class="tv-td-val" id="dashModel">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">CISD State</td>
+              <td class="tv-td-val" id="dashCISD">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Bull Sweep Active</td>
+              <td class="tv-td-val" id="dashBullSweep">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Bear Sweep Active</td>
+              <td class="tv-td-val" id="dashBearSweep">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">PDH / PDL</td>
+              <td class="tv-td-val font-mono" id="dashPDHPDL">-- / --</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">In Killzone</td>
+              <td class="tv-td-val" id="dashKZ">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Silver Bullet</td>
+              <td class="tv-td-val" id="dashSB">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">HTF Bias (30m)</td>
+              <td class="tv-td-val" id="dashHTFBias">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Market Status</td>
+              <td class="tv-td-val" id="dashMarketStatus">CLOSED</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Mode</td>
+              <td class="tv-td-val" id="dashMode">Live/Predictive</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- MAIN TRADINGVIEW LIGHTWEIGHT CHART -->
+      <div id="tradingviewChart" class="tv-chart-stage"></div>
+
+      <!-- TRADINGVIEW FLOATING ZOOM & AUTO BAR -->
+      <div class="tv-floating-zoom-bar">
+        <button id="floatZoomIn" class="tv-zoom-pill-btn" title="Zoom In (+)">+</button>
+        <button id="floatZoomOut" class="tv-zoom-pill-btn" title="Zoom Out (−)">−</button>
+        <button id="floatResetZoom" class="tv-zoom-pill-btn auto" title="Auto Scale / Reset View">Auto</button>
+      </div>
+
+      <!-- BOTTOM BAR FOR RECENT ALERTS -->
+      <div class="tv-bottom-bar">
+        <div class="tv-bottom-feed-title">
+          <i data-lucide="bell" style="width:14px; height:14px;"></i> SIGNAL ALERTS:
+        </div>
+        <div class="tv-alerts-ticker" id="signalsFeed">
+          <span class="tv-alert-empty">Monitoring real-time order flow for liquidity sweeps and FVG touches...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
-    {chart_js_code}
+    {chart_js_content}
 
-    const chart = new ICTChart('chartStage');
-    const candles = {candles_json};
-    const indicators = {indicators_json};
-    const options = {options_json};
+    const ALL_DATA = {data_json};
 
-    chart.setChartData({{
-      candles: candles,
-      indicators: indicators,
-      isInitial: true,
-      options: options
+    document.addEventListener('DOMContentLoaded', () => {{
+      if (window.lucide) window.lucide.createIcons();
+
+      const chart = new ICTChart('tradingviewChart');
+      let currentInstrument = 'NSE_INDEX|Nifty 50';
+      let currentInstrumentName = 'NIFTY 50';
+      let currentTimeframe = '5m';
+
+      // DOM Elements
+      const activeTickerTitle = document.getElementById('activeTickerTitle');
+      const activePrice = document.getElementById('activePrice');
+      const priceChange = document.getElementById('priceChange');
+      const activeTimeframeBadge = document.getElementById('activeTimeframeBadge');
+      const refreshBtn = document.getElementById('refreshBtn');
+      const indicesButtons = document.querySelectorAll('#indicesButtons .tv-tool-btn');
+      const tfButtons = document.querySelectorAll('#tfButtons .tv-tf-btn');
+
+      // Market Status Badge Elements
+      const marketStatusBadge = document.getElementById('marketStatusBadge');
+      const marketStatusText = document.getElementById('marketStatusText');
+      const marketStatusSub = document.getElementById('marketStatusSub');
+      const dashMarketStatus = document.getElementById('dashMarketStatus');
+
+      // Zoom controls
+      const zoomInBtn = document.getElementById('zoomInBtn');
+      const zoomOutBtn = document.getElementById('zoomOutBtn');
+      const resetZoomBtn = document.getElementById('resetZoomBtn');
+      const floatZoomIn = document.getElementById('floatZoomIn');
+      const floatZoomOut = document.getElementById('floatZoomOut');
+      const floatResetZoom = document.getElementById('floatResetZoom');
+
+      if (zoomInBtn) zoomInBtn.addEventListener('click', () => chart.zoomIn());
+      if (zoomOutBtn) zoomOutBtn.addEventListener('click', () => chart.zoomOut());
+      if (resetZoomBtn) resetZoomBtn.addEventListener('click', () => chart.resetZoom());
+      if (floatZoomIn) floatZoomIn.addEventListener('click', () => chart.zoomIn());
+      if (floatZoomOut) floatZoomOut.addEventListener('click', () => chart.zoomOut());
+      if (floatResetZoom) floatResetZoom.addEventListener('click', () => chart.resetZoom());
+
+      // OHLC elements
+      const barO = document.getElementById('barO');
+      const barH = document.getElementById('barH');
+      const barL = document.getElementById('barL');
+      const barC = document.getElementById('barC');
+
+      // Toggles
+      const toggleFVG = document.querySelector('#toggleFVG input');
+      const toggleOB = document.querySelector('#toggleOB input');
+      const toggleLiq = document.querySelector('#toggleLiq input');
+      const toggleSignals = document.querySelector('#toggleSignals input');
+
+      function getOverlayOptions() {{
+        return {{
+          showFVG: toggleFVG ? toggleFVG.checked : true,
+          showOB: toggleOB ? toggleOB.checked : true,
+          showLiq: toggleLiq ? toggleLiq.checked : true,
+          showSignals: toggleSignals ? toggleSignals.checked : true
+        }};
+      }}
+
+      // Pine Script Floating Table DOM
+      const dashSignalBadge = document.getElementById('dashSignalBadge');
+      const dashSignal = document.getElementById('dashSignal');
+      const dashIPDA = document.getElementById('dashIPDA');
+      const dashModel = document.getElementById('dashModel');
+      const dashCISD = document.getElementById('dashCISD');
+      const dashBullSweep = document.getElementById('dashBullSweep');
+      const dashBearSweep = document.getElementById('dashBearSweep');
+      const dashPDHPDL = document.getElementById('dashPDHPDL');
+      const dashKZ = document.getElementById('dashKZ');
+      const dashSB = document.getElementById('dashSB');
+      const dashHTFBias = document.getElementById('dashHTFBias');
+      const dashMode = document.getElementById('dashMode');
+      const signalsFeed = document.getElementById('signalsFeed');
+
+      let lastCandles = [];
+
+      chart.chart.subscribeCrosshairMove(param => {{
+        if (!param || !param.time || !param.seriesData || !param.seriesData.get(chart.candleSeries)) {{
+          if (lastCandles.length > 0) updateOHLC(lastCandles[lastCandles.length - 1]);
+          return;
+        }}
+        const d = param.seriesData.get(chart.candleSeries);
+        updateOHLC(d);
+      }});
+
+      function updateOHLC(bar) {{
+        if (!bar) return;
+        barO.textContent = bar.open.toFixed(2);
+        barH.textContent = bar.high.toFixed(2);
+        barL.textContent = bar.low.toFixed(2);
+        barC.textContent = bar.close.toFixed(2);
+        barC.style.color = bar.close >= bar.open ? 'var(--tv-bull)' : 'var(--tv-bear)';
+      }}
+
+      // Real-time IST Market Hours
+      function updateMarketStatusUI() {{
+        const now = new Date();
+        const parts = new Intl.DateTimeFormat('en-US', {{
+          timeZone: 'Asia/Kolkata',
+          hour12: false,
+          weekday: 'short',
+          hour: 'numeric',
+          minute: 'numeric'
+        }}).formatToParts(now);
+        const map = {{}};
+        for (const p of parts) map[p.type] = p.value;
+        const weekday = map.weekday;
+        const hour = parseInt(map.hour, 10);
+        const min = parseInt(map.minute, 10);
+        const total = hour * 60 + min;
+
+        const isWeekday = !['Sat', 'Sun'].includes(weekday);
+        const isOpen = isWeekday && total >= (9 * 60 + 15) && total < (15 * 60 + 30);
+
+        if (marketStatusBadge) {{
+          marketStatusBadge.className = `tv-market-badge ${{isOpen ? 'open' : 'closed'}}`;
+        }}
+        if (marketStatusText) {{
+          marketStatusText.textContent = isOpen ? 'MARKET OPEN' : 'MARKET CLOSED';
+        }}
+        if (marketStatusSub) {{
+          marketStatusSub.textContent = isOpen ? 'Live (Closes 15:30 IST)' : 'Opens today 09:15 AM IST';
+        }}
+        if (dashMarketStatus) {{
+          dashMarketStatus.textContent = isOpen ? 'OPEN (Live)' : 'CLOSED (Opens 09:15 AM IST)';
+          dashMarketStatus.style.color = isOpen ? 'var(--tv-bull)' : 'var(--tv-text-muted)';
+        }}
+      }}
+      updateMarketStatusUI();
+      setInterval(updateMarketStatusUI, 1000);
+
+      // Render Asset Data
+      function renderAsset(key, isInitial = false) {{
+        const data = ALL_DATA[key];
+        if (!data || !data.candles || data.candles.length === 0) return;
+
+        lastCandles = data.candles;
+        const lastCandle = data.candles[data.candles.length - 1];
+        const prevCandle = data.candles.length > 1 ? data.candles[data.candles.length - 2] : lastCandle;
+        const diff = lastCandle.close - prevCandle.close;
+        const pct = (diff / prevCandle.close) * 100;
+
+        activeTickerTitle.textContent = data.name;
+        activePrice.textContent = lastCandle.close.toFixed(2);
+        priceChange.textContent = `${{diff >= 0 ? '+' : ''}}${{diff.toFixed(2)}} (${{diff >= 0 ? '+' : ''}}${{pct.toFixed(2)}}%)`;
+        priceChange.className = `tv-chg-pill ${{diff >= 0 ? 'positive' : 'negative'}}`;
+
+        updateOHLC(lastCandle);
+
+        chart.setChartData({{
+          candles: data.candles,
+          indicators: data.indicators,
+          isInitial: isInitial,
+          options: getOverlayOptions()
+        }});
+
+        updateDashboard(data.indicators);
+      }}
+
+      function updateDashboard(ind) {{
+        if (!ind || !ind.dashboard) return;
+        const db = ind.dashboard;
+
+        dashSignal.textContent = db.signal;
+        dashIPDA.textContent = db.ipda_phase;
+        dashModel.textContent = db.last_model;
+        dashCISD.textContent = db.cisd_state;
+        dashBullSweep.textContent = db.bull_sweep_active;
+        dashBearSweep.textContent = db.bear_sweep_active;
+        dashPDHPDL.textContent = db.pdh_pdl;
+        dashKZ.textContent = db.in_killzone;
+        dashSB.textContent = db.silver_bullet;
+        dashHTFBias.textContent = db.htf_bias;
+        dashMode.textContent = db.mode;
+
+        const rawSig = db.signal.split(' ')[0];
+        dashSignalBadge.textContent = rawSig;
+        dashSignalBadge.className = `tv-pine-badge ${{rawSig === 'BUY' ? 'buy' : rawSig === 'SELL' ? 'sell' : 'hold'}}`;
+
+        if (ind.signals && ind.signals.length > 0) {{
+          signalsFeed.innerHTML = '';
+          const recent = ind.signals.slice(-4).reverse();
+          for (const s of recent) {{
+            const item = document.createElement('span');
+            const isBuy = s.signal === 'BUY';
+            item.className = `tv-alert-pill ${{isBuy ? 'buy' : 'sell'}}`;
+            const timeStr = new Date(s.time * 1000).toLocaleTimeString([], {{ hour: '2-digit', minute: '2-digit' }});
+            item.textContent = `${{isBuy ? '🟢 BUY' : '🔴 SELL'}} ${{s.model}} @ ${{s.entry_price.toFixed(2)}} [SL: ${{s.sl_price.toFixed(2)}} | TP: ${{s.tp_price.toFixed(2)}}] • ${{timeStr}}`;
+            signalsFeed.appendChild(item);
+          }}
+        }} else {{
+          signalsFeed.innerHTML = '<span class="tv-alert-empty">Monitoring real-time order flow for liquidity sweeps and FVG touches...</span>';
+        }}
+      }}
+
+      // Switcher Events
+      indicesButtons.forEach(btn => {{
+        btn.addEventListener('click', () => {{
+          indicesButtons.forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          currentInstrument = btn.dataset.symbol;
+          currentInstrumentName = btn.textContent.trim();
+          renderAsset(currentInstrument, true);
+        }});
+      }});
+
+      [toggleFVG, toggleOB, toggleLiq, toggleSignals].forEach(cb => {{
+        if (cb) {{
+          cb.addEventListener('change', () => {{
+            const data = ALL_DATA[currentInstrument];
+            if (data) {{
+              chart.setChartData({{
+                candles: data.candles,
+                indicators: data.indicators,
+                isInitial: false,
+                options: getOverlayOptions()
+              }});
+            }}
+          }});
+        }}
+      }});
+
+      refreshBtn.addEventListener('click', () => {{
+        refreshBtn.style.transform = 'rotate(360deg)';
+        setTimeout(() => refreshBtn.style.transform = '', 300);
+        window.location.reload();
+      }});
+
+      // Initial render
+      renderAsset(currentInstrument, true);
     }});
   </script>
 </body>
 </html>
 """
 
-components.html(html_content, height=700)
-
-# Display recent alerts table
-st.subheader("Recent Order Flow Signals & Trades")
-signals = result.get("signals", [])
-if signals:
-    sig_data = [
-        {
-            "Time (IST)": datetime.fromtimestamp(s["time"], tz=IST).strftime("%Y-%m-%d %H:%M"),
-            "Signal": s["signal"],
-            "Entry Model": s["model"],
-            "Entry Price": f"{s['entry_price']:.2f}",
-            "Stop Loss": f"{s['sl_price']:.2f}",
-            "Take Profit (2:1)": f"{s['tp_price']:.2f}",
-        }
-        for s in reversed(signals[-10:])
-    ]
-    st.dataframe(sig_data, use_container_width=True)
-else:
-    st.info("No active predictive signals fired in the current lookback window. Order flow monitoring active.")
+# Render 100% full-screen TradingView native layout
+components.html(full_html, height=940)
