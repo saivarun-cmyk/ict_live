@@ -43,17 +43,21 @@ st.markdown("""
   }
   iframe {
     width: 100vw !important;
-    height: 100vh !important;
+    height: 820px !important;
     border: none !important;
     display: block !important;
+    overflow: hidden !important;
   }
 </style>
 """, unsafe_allow_html=True)
 
 # Helper to read secrets from st.secrets (Streamlit Cloud) or .env / os.environ
 def get_secret(key: str, default: str = "") -> str:
-    if hasattr(st, "secrets") and key in st.secrets:
-        return str(st.secrets[key])
+    try:
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
     return os.getenv(key, default)
 
 for k in ["UPSTOX_ACCESS_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "MOCK_REPLAY"]:
@@ -81,55 +85,69 @@ notifier = TelegramNotifier()
 if "notified_signals" not in st.session_state:
     st.session_state["notified_signals"] = set()
 
-def dispatch_alerts_for_result(instrument_name: str, result: dict, latest_timestamp: int):
+def dispatch_alerts_for_result(instrument_name: str, tf_label: str, result: dict, latest_timestamp: int):
     if not notifier.is_enabled() or not result:
         return
     for s in result.get("signals", []):
         sig_time = s.get("time", 0)
         if abs(latest_timestamp - sig_time) <= 1800:
-            sig_id = f"{instrument_name}_{sig_time}_{s.get('signal')}_{s.get('entry_price')}"
+            sig_id = f"{instrument_name}_{tf_label}_{sig_time}_{s.get('signal')}_{s.get('entry_price')}"
             if sig_id not in st.session_state["notified_signals"]:
                 st.session_state["notified_signals"].add(sig_id)
-                notifier.notify_signal(instrument_name, s)
+                notifier.notify_signal(f"{instrument_name} ({tf_label})", s)
 
     for ev in result.get("silver_bullet_events", []):
         ev_time = ev.get("time", 0)
         if abs(latest_timestamp - ev_time) <= 1800:
-            ev_id = f"{instrument_name}_{ev_time}_{ev.get('type')}_{ev.get('price')}"
+            ev_id = f"{instrument_name}_{tf_label}_{ev_time}_{ev.get('type')}_{ev.get('price')}"
             if ev_id not in st.session_state["notified_signals"]:
                 st.session_state["notified_signals"].add(ev_id)
-                notifier.notify_silver_bullet(instrument_name, ev)
+                notifier.notify_silver_bullet(f"{instrument_name} ({tf_label})", ev)
 
-# Preload data for all 3 indices (NIFTY 50, BANK NIFTY, SENSEX)
+# Preload data for all 3 indices across 1m, 5m, and 15m timeframes
 indices = instruments_cfg.get("indices", [])
+timeframe_configs = [
+    ("1m", "1minute", 2),
+    ("5m", "5minute", 4),
+    ("15m", "15minute", 8)
+]
+
 preloaded_data = {}
 
 for item in indices:
     key = item["instrument_key"]
     name = item["name"]
-    candles = data_client.fetch_historical_candles(key, interval="5minute", days=5)
+    symbol = item["symbol"]
     htf = data_client.fetch_historical_candles(key, interval="30minute", days=10)
-    res = engine.evaluate(candles, htf_candles=htf)
-    
-    latest_ts = candles[-1].timestamp if candles else 0
-    dispatch_alerts_for_result(name, res, latest_ts)
 
-    preloaded_data[key] = {
-        "name": name,
-        "symbol": item["symbol"],
-        "candles": [
-            {
-                "time": c.timestamp,
-                "open": c.open,
-                "high": c.high,
-                "low": c.low,
-                "close": c.close,
-                "volume": c.volume
-            }
-            for c in candles
-        ],
-        "indicators": res
-    }
+    for tf_label, interval, days in timeframe_configs:
+        candles = data_client.fetch_historical_candles(key, interval=interval, days=days)
+        res = engine.evaluate(candles, htf_candles=htf)
+        
+        latest_ts = candles[-1].timestamp if candles else 0
+        dispatch_alerts_for_result(name, tf_label, res, latest_ts)
+
+        combo_key = f"{key}_{tf_label}"
+        data_entry = {
+            "name": name,
+            "symbol": symbol,
+            "timeframe": tf_label,
+            "candles": [
+                {
+                    "time": c.timestamp,
+                    "open": c.open,
+                    "high": c.high,
+                    "low": c.low,
+                    "close": c.close,
+                    "volume": c.volume
+                }
+                for c in candles
+            ],
+            "indicators": res
+        }
+        preloaded_data[combo_key] = data_entry
+        if tf_label == "5m":
+            preloaded_data[key] = data_entry
 
 # Read CSS and chart.js
 with open(os.path.join(BASE_DIR, "web", "css", "style.css")) as f:
@@ -154,18 +172,38 @@ full_html = f"""<!DOCTYPE html>
   <style>
     {css_content}
     html, body {{
-      width: 100vw;
-      height: 100vh;
-      overflow: hidden;
+      width: 100%;
+      height: 100%;
+      overflow: hidden !important;
       margin: 0;
       padding: 0;
     }}
     .tv-app-container {{
-      width: 100vw;
-      height: 100vh;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden !important;
     }}
     .tv-chart-viewport {{
-      height: calc(100vh - 48px);
+      flex: 1 1 0% !important;
+      min-height: 0 !important;
+      overflow: hidden !important;
+      position: relative !important;
+      display: flex !important;
+      flex-direction: column !important;
+    }}
+    .tv-chart-stage {{
+      flex: 1 1 0% !important;
+      min-height: 0 !important;
+      width: 100% !important;
+      position: relative !important;
+    }}
+    .tv-bottom-bar {{
+      height: 38px !important;
+      min-height: 38px !important;
+      max-height: 38px !important;
+      flex-shrink: 0 !important;
     }}
   </style>
 </head>
@@ -190,7 +228,7 @@ full_html = f"""<!DOCTYPE html>
 
         <div class="tv-divider"></div>
 
-        <!-- TIMEFRAME SELECTOR -->
+        <!-- TIMEFRAME SELECTOR (1m, 5m, 15m) -->
         <div class="tv-timeframe-bar" id="tfButtons">
           <button class="tv-tf-btn" data-tf="1m">1m</button>
           <button class="tv-tf-btn active" data-tf="5m">5m</button>
@@ -249,18 +287,15 @@ full_html = f"""<!DOCTYPE html>
       </div>
     </header>
 
-    <!-- CHART WORKSPACE -->
+    <!-- CHART VIEWPORT -->
     <div class="tv-chart-viewport">
-      <!-- TOP ASYNC PROGRESS LOADER -->
-      <div id="chartLoadingBar" class="tv-loading-bar"></div>
-
-      <!-- CURRENT TICKER INFO OVERLAY (Top-Left of chart) -->
+      <!-- TOP-LEFT TICKER HUD -->
       <div class="tv-ticker-hud">
         <div class="tv-ticker-main">
-          <span id="activeTickerTitle" class="tv-symbol-name">NIFTY 50</span>
-          <span class="tv-tf-tag" id="activeTimeframeBadge">5m</span>
-          <span id="activePrice" class="tv-last-price">--</span>
-          <span id="priceChange" class="tv-chg-pill neutral">--</span>
+          <span class="tv-symbol-name" id="activeTickerTitle">NIFTY 50</span>
+          <span class="tv-tf-tag" id="activeTimeframeBadge">5M</span>
+          <span class="tv-last-price" id="activePrice">--</span>
+          <span class="tv-chg-pill" id="priceChange">--</span>
         </div>
         <div class="tv-ticker-meta">
           <span>O: <b id="barO">--</b></span>
@@ -283,6 +318,18 @@ full_html = f"""<!DOCTYPE html>
             <tr>
               <td class="tv-td-lbl">Signal</td>
               <td class="tv-td-val" id="dashSignal">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Active Trade</td>
+              <td class="tv-td-val" id="dashTradeEntry" style="font-weight:700;">Waiting</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">SL / TP Targets</td>
+              <td class="tv-td-val font-mono" id="dashTradeTargets">-- / --</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Active Setups</td>
+              <td class="tv-td-val" id="dashSetupsCount" style="color:var(--tv-gold); font-weight:600;">--</td>
             </tr>
             <tr>
               <td class="tv-td-lbl">IPDA Phase</td>
@@ -324,10 +371,6 @@ full_html = f"""<!DOCTYPE html>
               <td class="tv-td-lbl">Market Status</td>
               <td class="tv-td-val" id="dashMarketStatus">CLOSED</td>
             </tr>
-            <tr>
-              <td class="tv-td-lbl">Mode</td>
-              <td class="tv-td-val" id="dashMode">Live/Predictive</td>
-            </tr>
           </tbody>
         </table>
       </div>
@@ -345,7 +388,7 @@ full_html = f"""<!DOCTYPE html>
       <!-- BOTTOM BAR FOR RECENT ALERTS -->
       <div class="tv-bottom-bar">
         <div class="tv-bottom-feed-title">
-          <i data-lucide="bell" style="width:14px; height:14px;"></i> SIGNAL ALERTS:
+          <i data-lucide="bell" style="width:14px; height:14px;"></i> RECENT SIGNALS:
         </div>
         <div class="tv-alerts-ticker" id="signalsFeed">
           <span class="tv-alert-empty">Monitoring real-time order flow for liquidity sweeps and FVG touches...</span>
@@ -366,6 +409,10 @@ full_html = f"""<!DOCTYPE html>
       let currentInstrument = 'NSE_INDEX|Nifty 50';
       let currentInstrumentName = 'NIFTY 50';
       let currentTimeframe = '5m';
+
+      function getActiveKey() {{
+        return currentInstrument + '_' + currentTimeframe;
+      }}
 
       // DOM Elements
       const activeTickerTitle = document.getElementById('activeTickerTitle');
@@ -421,6 +468,9 @@ full_html = f"""<!DOCTYPE html>
       // Pine Script Floating Table DOM
       const dashSignalBadge = document.getElementById('dashSignalBadge');
       const dashSignal = document.getElementById('dashSignal');
+      const dashTradeEntry = document.getElementById('dashTradeEntry');
+      const dashTradeTargets = document.getElementById('dashTradeTargets');
+      const dashSetupsCount = document.getElementById('dashSetupsCount');
       const dashIPDA = document.getElementById('dashIPDA');
       const dashModel = document.getElementById('dashModel');
       const dashCISD = document.getElementById('dashCISD');
@@ -430,7 +480,6 @@ full_html = f"""<!DOCTYPE html>
       const dashKZ = document.getElementById('dashKZ');
       const dashSB = document.getElementById('dashSB');
       const dashHTFBias = document.getElementById('dashHTFBias');
-      const dashMode = document.getElementById('dashMode');
       const signalsFeed = document.getElementById('signalsFeed');
 
       let lastCandles = [];
@@ -492,7 +541,10 @@ full_html = f"""<!DOCTYPE html>
 
       // Render Asset Data
       function renderAsset(key, isInitial = false) {{
-        const data = ALL_DATA[key];
+        let data = ALL_DATA[key];
+        if (!data) {{
+          data = ALL_DATA[currentInstrument];
+        }}
         if (!data || !data.candles || data.candles.length === 0) return;
 
         lastCandles = data.candles;
@@ -502,6 +554,7 @@ full_html = f"""<!DOCTYPE html>
         const pct = (diff / prevCandle.close) * 100;
 
         activeTickerTitle.textContent = data.name;
+        activeTimeframeBadge.textContent = (data.timeframe || currentTimeframe).toUpperCase();
         activePrice.textContent = lastCandle.close.toFixed(2);
         priceChange.textContent = `${{diff >= 0 ? '+' : ''}}${{diff.toFixed(2)}} (${{diff >= 0 ? '+' : ''}}${{pct.toFixed(2)}}%)`;
         priceChange.className = `tv-chg-pill ${{diff >= 0 ? 'positive' : 'negative'}}`;
@@ -519,56 +572,104 @@ full_html = f"""<!DOCTYPE html>
       }}
 
       function updateDashboard(ind) {{
-        if (!ind || !ind.dashboard) return;
-        const db = ind.dashboard;
+        if (!ind) return;
+        const db = ind.dashboard || {{}};
 
-        dashSignal.textContent = db.signal;
-        dashIPDA.textContent = db.ipda_phase;
-        dashModel.textContent = db.last_model;
-        dashCISD.textContent = db.cisd_state;
-        dashBullSweep.textContent = db.bull_sweep_active;
-        dashBearSweep.textContent = db.bear_sweep_active;
-        dashPDHPDL.textContent = db.pdh_pdl;
-        dashKZ.textContent = db.in_killzone;
-        dashSB.textContent = db.silver_bullet;
-        dashHTFBias.textContent = db.htf_bias;
-        dashMode.textContent = db.mode;
+        dashSignal.textContent = db.signal || '--';
+        dashIPDA.textContent = db.ipda_phase || '--';
+        dashModel.textContent = db.last_model || '--';
+        dashCISD.textContent = db.cisd_state || '--';
+        dashBullSweep.textContent = db.bull_sweep_active || '--';
+        dashBearSweep.textContent = db.bear_sweep_active || '--';
+        dashPDHPDL.textContent = db.pdh_pdl || '-- / --';
+        dashKZ.textContent = db.in_killzone || '--';
+        dashSB.textContent = db.silver_bullet || '--';
+        dashHTFBias.textContent = db.htf_bias || '--';
 
-        const rawSig = db.signal.split(' ')[0];
+        const rawSig = (db.signal || 'HOLD').split(' ')[0];
         dashSignalBadge.textContent = rawSig;
         dashSignalBadge.className = `tv-pine-badge ${{rawSig === 'BUY' ? 'buy' : rawSig === 'SELL' ? 'sell' : 'hold'}}`;
 
+        // Active Setups Count
+        const activeFvgs = (ind.fvg_zones || []).filter(f => !f.mitigated && !f.excluded_fake).length;
+        const activeObs = (ind.order_blocks || []).filter(o => !o.mitigated).length;
+        const activeLiq = (ind.liquidity_levels || []).length;
+        if (dashSetupsCount) {{
+          dashSetupsCount.textContent = `${{activeFvgs}} FVGs | ${{activeObs}} OBs | ${{activeLiq}} Liq`;
+        }}
+
+        // Active Trade & Targets
+        if (ind.active_trade) {{
+          const at = ind.active_trade;
+          if (dashTradeEntry) {{
+            dashTradeEntry.textContent = `${{at.signal}} @ ${{at.entry_price.toFixed(2)}}`;
+            dashTradeEntry.style.color = at.signal === 'BUY' ? 'var(--tv-bull)' : 'var(--tv-bear)';
+          }}
+          if (dashTradeTargets) {{
+            dashTradeTargets.textContent = `SL: ${{at.sl_price.toFixed(2)}} | TP: ${{at.tp_price.toFixed(2)}}`;
+          }}
+        }} else if (ind.signals && ind.signals.length > 0) {{
+          const latestSig = ind.signals[ind.signals.length - 1];
+          if (dashTradeEntry) {{
+            dashTradeEntry.textContent = `${{latestSig.signal}} (${{latestSig.model}}) @ ${{latestSig.entry_price.toFixed(2)}}`;
+            dashTradeEntry.style.color = latestSig.signal === 'BUY' ? 'var(--tv-bull)' : 'var(--tv-bear)';
+          }}
+          if (dashTradeTargets) {{
+            dashTradeTargets.textContent = `SL: ${{latestSig.sl_price.toFixed(2)}} | TP: ${{latestSig.tp_price.toFixed(2)}}`;
+          }}
+        }} else {{
+          if (dashTradeEntry) {{
+            dashTradeEntry.textContent = 'Waiting for sweep';
+            dashTradeEntry.style.color = 'var(--tv-text-muted)';
+          }}
+          if (dashTradeTargets) {{
+            dashTradeTargets.textContent = '-- / --';
+          }}
+        }}
+
+        // Signals Feed (Bottom Ticker)
         if (ind.signals && ind.signals.length > 0) {{
           signalsFeed.innerHTML = '';
-          const recent = ind.signals.slice(-4).reverse();
+          const recent = ind.signals.slice(-6).reverse();
           for (const s of recent) {{
             const item = document.createElement('span');
             const isBuy = s.signal === 'BUY';
             item.className = `tv-alert-pill ${{isBuy ? 'buy' : 'sell'}}`;
             const timeStr = new Date(s.time * 1000).toLocaleTimeString([], {{ hour: '2-digit', minute: '2-digit' }});
-            item.textContent = `${{isBuy ? '🟢 BUY' : '🔴 SELL'}} ${{s.model}} @ ${{s.entry_price.toFixed(2)}} [SL: ${{s.sl_price.toFixed(2)}} | TP: ${{s.tp_price.toFixed(2)}}] • ${{timeStr}}`;
+            item.innerHTML = `${{isBuy ? '🟢 BUY' : '🔴 SELL'}} <b>${{s.model}}</b> @ <b>${{s.entry_price.toFixed(2)}}</b> [SL: ${{s.sl_price.toFixed(2)}} | TP: ${{s.tp_price.toFixed(2)}}] • <span style="opacity:0.75;">${{timeStr}}</span>`;
             signalsFeed.appendChild(item);
           }}
         }} else {{
-          signalsFeed.innerHTML = '<span class="tv-alert-empty">Monitoring real-time order flow for liquidity sweeps and FVG touches...</span>';
+          signalsFeed.innerHTML = '<span class="tv-alert-empty">⚡ Monitoring live order flow for liquidity sweeps, Fair Value Gaps, and Order Blocks...</span>';
         }}
       }}
 
-      // Switcher Events
+      // Switcher Events: Indices
       indicesButtons.forEach(btn => {{
         btn.addEventListener('click', () => {{
           indicesButtons.forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
           currentInstrument = btn.dataset.symbol;
           currentInstrumentName = btn.textContent.trim();
-          renderAsset(currentInstrument, true);
+          renderAsset(getActiveKey(), true);
+        }});
+      }});
+
+      // Switcher Events: Timeframes (1m, 5m, 15m)
+      tfButtons.forEach(btn => {{
+        btn.addEventListener('click', () => {{
+          tfButtons.forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          currentTimeframe = btn.dataset.tf;
+          activeTimeframeBadge.textContent = currentTimeframe.toUpperCase();
+          renderAsset(getActiveKey(), false);
         }});
       }});
 
       [toggleFVG, toggleOB, toggleLiq, toggleSignals].forEach(cb => {{
         if (cb) {{
           cb.addEventListener('change', () => {{
-            const data = ALL_DATA[currentInstrument];
+            const data = ALL_DATA[getActiveKey()] || ALL_DATA[currentInstrument];
             if (data) {{
               chart.setChartData({{
                 candles: data.candles,
@@ -587,13 +688,13 @@ full_html = f"""<!DOCTYPE html>
         window.location.reload();
       }});
 
-      // Initial render
-      renderAsset(currentInstrument, true);
+      // Initial render with NIFTY 50 5m
+      renderAsset(getActiveKey(), true);
     }});
   </script>
 </body>
 </html>
 """
 
-# Render 100% full-screen TradingView native layout
-components.html(full_html, height=940)
+# Render full-screen TradingView native layout without overflow
+components.html(full_html, height=820)
