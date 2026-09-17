@@ -43,3 +43,4 @@ ENV/
 *.log
 scratch/
 screenshot*.png
+.streamlit/secrets.toml
