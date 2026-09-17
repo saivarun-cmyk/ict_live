@@ -1,0 +1,575 @@
+/* ADVANCED TRADINGVIEW LAYOUT & THEME STYLING */
+:root {
+  --tv-bg: #131722;
+  --tv-surface: #1e222d;
+  --tv-surface-hover: #2a2e39;
+  --tv-border: #2a2e39;
+  --tv-text: #d1d4dc;
+  --tv-text-muted: #787b86;
+  --tv-bull: #089981;
+  --tv-bear: #f23645;
+  --tv-blue: #2962ff;
+  --tv-purple: #9c27b0;
+  --tv-gold: #ffd600;
+  --tv-font: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+  --tv-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--tv-bg);
+  color: var(--tv-text);
+  font-family: var(--tv-font);
+}
+
+.tv-app-container {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* TOP TOOLBAR */
+.tv-top-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 48px;
+  min-height: 48px;
+  background-color: var(--tv-bg);
+  border-bottom: 1px solid var(--tv-border);
+  padding: 0 16px;
+  user-select: none;
+  z-index: 20;
+}
+
+.tv-toolbar-left, .tv-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tv-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tv-logo-badge {
+  background: var(--tv-blue);
+  color: #ffffff;
+  font-weight: 800;
+  font-size: 0.72rem;
+  padding: 3px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+}
+
+.tv-title {
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.tv-divider {
+  width: 1px;
+  height: 24px;
+  background-color: var(--tv-border);
+  margin: 0 4px;
+}
+
+/* BUTTONS & SELECTORS */
+.tv-instruments-bar, .tv-timeframe-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tv-tool-btn, .tv-tf-btn {
+  background: transparent;
+  border: none;
+  color: var(--tv-text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tv-tool-btn:hover, .tv-tf-btn:hover {
+  background-color: var(--tv-surface-hover);
+  color: #ffffff;
+}
+
+.tv-tool-btn.active, .tv-tf-btn.active {
+  background-color: var(--tv-surface-hover);
+  color: var(--tv-blue);
+  font-weight: 700;
+}
+
+.tv-select {
+  background: var(--tv-surface);
+  color: var(--tv-text);
+  border: 1px solid var(--tv-border);
+  font-size: 0.78rem;
+  padding: 5px 10px;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* TOGGLE CHIPS */
+.tv-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tv-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--tv-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.tv-chip:hover { color: var(--tv-text); }
+.tv-chip input { cursor: pointer; }
+
+.tv-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.tv-chip-dot.fvg { background: var(--tv-bull); }
+.tv-chip-dot.ob { background: var(--tv-blue); }
+.tv-chip-dot.liq { background: var(--tv-purple); }
+.tv-chip-dot.sig { background: #00f0ff; }
+
+/* LIVE BADGE */
+.tv-live-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(8, 153, 129, 0.1);
+  border: 1px solid rgba(8, 153, 129, 0.3);
+  border-radius: 4px;
+}
+
+.tv-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--tv-bull);
+  box-shadow: 0 0 6px var(--tv-bull);
+  animation: tv-blink 1.4s infinite;
+}
+
+@keyframes tv-blink {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.8); }
+}
+
+.tv-live-text {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--tv-bull);
+}
+
+.tv-icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--tv-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 4px;
+}
+.tv-icon-btn:hover {
+  background-color: var(--tv-surface-hover);
+  color: #ffffff;
+}
+
+/* CHART VIEWPORT */
+.tv-chart-viewport {
+  flex: 1;
+  position: relative;
+  width: 100%;
+  height: calc(100vh - 48px);
+  background-color: var(--tv-bg);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tv-chart-stage {
+  flex: 1;
+  width: 100%;
+  height: calc(100% - 32px);
+  min-height: 400px;
+  position: relative;
+  background-color: var(--tv-bg);
+}
+
+/* Make sure Lightweight Charts internal canvas is 100% visible */
+.tv-chart-stage canvas {
+  display: block !important;
+}
+
+/* TICKER HUD (Top-Left) */
+.tv-ticker-hud {
+  position: absolute;
+  top: 14px;
+  left: 18px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.tv-ticker-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.tv-symbol-name {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #ffffff;
+  letter-spacing: 0.3px;
+}
+
+.tv-tf-tag {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--tv-text-muted);
+  background: var(--tv-surface);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.tv-last-price {
+  font-size: 1.15rem;
+  font-weight: 700;
+  font-family: var(--tv-mono);
+  color: #ffffff;
+  margin-left: 4px;
+}
+
+.tv-chg-pill {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: var(--tv-mono);
+}
+.tv-chg-pill.positive { background: rgba(8, 153, 129, 0.18); color: var(--tv-bull); }
+.tv-chg-pill.negative { background: rgba(242, 54, 69, 0.18); color: var(--tv-bear); }
+.tv-chg-pill.neutral { background: rgba(120, 123, 134, 0.18); color: var(--tv-text-muted); }
+
+.tv-ticker-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 0.72rem;
+  color: var(--tv-text-muted);
+  font-family: var(--tv-mono);
+}
+.tv-ticker-meta b { color: var(--tv-text); }
+
+/* PINE SCRIPT TOP-RIGHT TABLE HUD */
+.tv-pine-table-hud {
+  position: absolute;
+  top: 14px;
+  right: 68px;
+  z-index: 15;
+  background: rgba(30, 34, 45, 0.92);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 10px 14px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  width: 250px;
+  pointer-events: auto;
+}
+
+.tv-pine-table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+}
+
+.tv-pine-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tv-pine-logo {
+  color: var(--tv-bull);
+  font-size: 0.7rem;
+}
+
+.tv-pine-badge {
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.4px;
+}
+.tv-pine-badge.buy { background: var(--tv-bull); color: #ffffff; }
+.tv-pine-badge.sell { background: var(--tv-bear); color: #ffffff; }
+.tv-pine-badge.hold { background: var(--tv-surface-hover); color: var(--tv-text-muted); }
+
+.tv-pine-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.tv-pine-table td {
+  padding: 3.5px 2px;
+  font-size: 0.72rem;
+}
+
+.tv-td-lbl {
+  color: var(--tv-text-muted);
+  width: 52%;
+}
+
+.tv-td-val {
+  text-align: right;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.font-mono {
+  font-family: var(--tv-mono);
+}
+
+/* BOTTOM ALERTS TICKER */
+.tv-bottom-bar {
+  height: 32px;
+  min-height: 32px;
+  background-color: var(--tv-surface);
+  border-top: 1px solid var(--tv-border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 12px;
+  font-size: 0.74rem;
+  z-index: 15;
+}
+
+.tv-bottom-feed-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  color: var(--tv-text-muted);
+}
+
+.tv-alerts-ticker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  overflow-x: auto;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.tv-alert-pill {
+  background: var(--tv-surface-hover);
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-family: var(--tv-mono);
+  font-size: 0.7rem;
+}
+.tv-alert-pill.buy { color: var(--tv-bull); border-left: 2px solid var(--tv-bull); }
+.tv-alert-pill.sell { color: var(--tv-bear); border-left: 2px solid var(--tv-bear); }
+.tv-alert-empty { color: var(--tv-text-muted); font-style: italic; }
+
+
+/* TRADINGVIEW FLOATING ZOOM & AUTO SCALE BAR */
+.tv-floating-zoom-bar {
+  position: absolute;
+  bottom: 42px;
+  right: 68px;
+  z-index: 18;
+  display: flex;
+  align-items: center;
+  background: rgba(30, 34, 45, 0.90);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 2px 4px;
+  gap: 3px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  user-select: none;
+}
+
+.tv-zoom-pill-btn {
+  background: transparent;
+  border: none;
+  color: var(--tv-text);
+  font-size: 15px;
+  font-weight: 700;
+  width: 26px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.tv-zoom-pill-btn.auto {
+  width: auto;
+  padding: 0 7px;
+  font-size: 11px;
+  font-family: var(--tv-font);
+  font-weight: 600;
+  color: var(--tv-text-muted);
+}
+
+.tv-zoom-pill-btn:hover {
+  background: var(--tv-surface-hover);
+  color: #ffffff;
+}
+
+.tv-zoom-pill-btn.auto:hover {
+  color: var(--tv-blue);
+}
+
+
+/* DYNAMIC MARKET STATUS BADGE */
+.tv-market-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--tv-surface);
+  border: 1px solid var(--tv-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  user-select: none;
+  transition: all 0.2s ease;
+}
+
+.tv-market-badge.open {
+  border-color: rgba(8, 153, 129, 0.4);
+  background: rgba(8, 153, 129, 0.08);
+}
+
+.tv-market-badge.closed {
+  border-color: rgba(242, 54, 69, 0.3);
+  background: rgba(242, 54, 69, 0.06);
+}
+
+.tv-market-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #787b86;
+  flex-shrink: 0;
+}
+
+.tv-market-badge.open .tv-market-dot {
+  background: var(--tv-bull);
+  box-shadow: 0 0 8px var(--tv-bull);
+  animation: tvPulse 1.8s infinite;
+}
+
+.tv-market-badge.closed .tv-market-dot {
+  background: var(--tv-bear);
+}
+
+.tv-market-info {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.tv-market-title {
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.4px;
+}
+
+.tv-market-badge.open .tv-market-title {
+  color: var(--tv-bull);
+}
+
+.tv-market-badge.closed .tv-market-title {
+  color: var(--tv-bear);
+}
+
+.tv-market-sub {
+  font-size: 0.62rem;
+  color: var(--tv-text-muted);
+}
+
+/* TOP PROGRESS LOADER */
+.tv-loading-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: transparent;
+  z-index: 50;
+  overflow: hidden;
+}
+
+.tv-loading-bar.active {
+  background: rgba(41, 98, 255, 0.2);
+}
+
+.tv-loading-bar.active::after {
+  content: '';
+  position: absolute;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  background: var(--tv-blue);
+  animation: tvLoadingSlide 0.8s infinite linear;
+}
+
+@keyframes tvLoadingSlide {
+  0% { left: -40%; }
+  100% { left: 100%; }
+}
+
+/* BUTTON LOADING STATE */
+.tv-tool-btn.loading {
+  opacity: 0.7;
+  position: relative;
+}
+
+.tv-symbol-name.loading::after {
+  content: ' ⏳';
+  font-size: 0.75rem;
+}

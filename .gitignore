@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+
+# Environment variables & secrets (CRITICAL)
+.env
+.env.local
+*.pem
+*.key
+
+# IDEs & OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs & temp files
+*.log
+scratch/
+screenshot*.png

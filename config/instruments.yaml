@@ -1,0 +1,69 @@
+# Target Instruments Configuration
+# Indices: NIFTY 50, BANK NIFTY, SENSEX
+# Configurable Stocks: Add any stock symbol below with enabled: true/false
+
+indices:
+  - id: "nifty_50"
+    name: "NIFTY 50"
+    symbol: "NIFTY"
+    instrument_key: "NSE_INDEX|Nifty 50"
+    exchange: "NSE_INDEX"
+    tick_size: 0.05
+    enabled: true
+
+  - id: "bank_nifty"
+    name: "BANK NIFTY"
+    symbol: "BANKNIFTY"
+    instrument_key: "NSE_INDEX|Nifty Bank"
+    exchange: "NSE_INDEX"
+    tick_size: 0.05
+    enabled: true
+
+  - id: "sensex"
+    name: "SENSEX"
+    symbol: "SENSEX"
+    instrument_key: "BSE_INDEX|SENSEX"
+    exchange: "BSE_INDEX"
+    tick_size: 0.05
+    enabled: true
+
+stocks:
+  - id: "reliance"
+    name: "Reliance Industries"
+    symbol: "RELIANCE"
+    instrument_key: "NSE_EQ|INE002A01018"
+    exchange: "NSE_EQ"
+    tick_size: 0.05
+    enabled: true
+
+  - id: "hdfc_bank"
+    name: "HDFC Bank"
+    symbol: "HDFCBANK"
+    instrument_key: "NSE_EQ|INE040A01034"
+    exchange: "NSE_EQ"
+    tick_size: 0.05
+    enabled: true
+
+  - id: "tcs"
+    name: "Tata Consultancy Services"
+    symbol: "TCS"
+    instrument_key: "NSE_EQ|INE467B01029"
+    exchange: "NSE_EQ"
+    tick_size: 0.05
+    enabled: false
+
+  - id: "infy"
+    name: "Infosys"
+    symbol: "INFY"
+    instrument_key: "NSE_EQ|INE009A01021"
+    exchange: "NSE_EQ"
+    tick_size: 0.05
+    enabled: false
+
+  - id: "icici_bank"
+    name: "ICICI Bank"
+    symbol: "ICICIBANK"
+    instrument_key: "NSE_EQ|INE090A01021"
+    exchange: "NSE_EQ"
+    tick_size: 0.05
+    enabled: false

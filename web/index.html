@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradingView | ICT Predictive Signals [Liquidity + FVG + OB]</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- TradingView Lightweight Charts v4 -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="tv-dark-theme">
+  <div class="tv-app-container">
+    <!-- TRADINGVIEW TOP TOOLBAR -->
+    <header class="tv-top-toolbar">
+      <!-- SYMBOL & LOGO -->
+      <div class="tv-toolbar-left">
+        <div class="tv-brand">
+          <div class="tv-logo-badge">TV</div>
+          <span class="tv-title">ICT Predictive Signals</span>
+        </div>
+
+        <div class="tv-divider"></div>
+
+        <!-- QUICK INSTRUMENT SWITCHER -->
+        <div class="tv-instruments-bar" id="indicesButtons">
+          <button class="tv-tool-btn active" data-symbol="NSE_INDEX|Nifty 50">NIFTY 50</button>
+          <button class="tv-tool-btn" data-symbol="NSE_INDEX|Nifty Bank">BANK NIFTY</button>
+          <button class="tv-tool-btn" data-symbol="BSE_INDEX|SENSEX">SENSEX</button>
+        </div>
+
+        <!-- STOCKS DROPDOWN -->
+        <select id="stocksSelect" class="tv-select">
+          <option value="">-- Equities --</option>
+        </select>
+
+        <div class="tv-divider"></div>
+
+        <!-- TIMEFRAME SELECTOR -->
+        <div class="tv-timeframe-bar" id="tfButtons">
+          <button class="tv-tf-btn" data-tf="1m">1m</button>
+          <button class="tv-tf-btn active" data-tf="5m">5m</button>
+          <button class="tv-tf-btn" data-tf="15m">15m</button>
+        </div>
+      </div>
+
+      <!-- RIGHT CONTROLS: OVERLAYS & LIVE STATUS -->
+      <div class="tv-toolbar-right">
+        <!-- INDICATOR OVERLAY CHIPS -->
+        <div class="tv-toggle-group">
+          <label class="tv-chip active" id="toggleFVG">
+            <input type="checkbox" checked>
+            <span class="tv-chip-dot fvg"></span> FVG Zones
+          </label>
+          <label class="tv-chip active" id="toggleOB">
+            <input type="checkbox" checked>
+            <span class="tv-chip-dot ob"></span> Order Blocks
+          </label>
+          <label class="tv-chip active" id="toggleLiq">
+            <input type="checkbox" checked>
+            <span class="tv-chip-dot liq"></span> PDH / PDL
+          </label>
+          <label class="tv-chip active" id="toggleSignals">
+            <input type="checkbox" checked>
+            <span class="tv-chip-dot sig"></span> Signals & Trades
+          </label>
+        </div>
+
+        <div class="tv-divider"></div>
+
+        <!-- DYNAMIC MARKET STATUS BADGE -->
+        <div id="marketStatusBadge" class="tv-market-badge closed" title="NSE / BSE Trading Session: 09:15 - 15:30 IST (Mon-Fri)">
+          <span class="tv-market-dot"></span>
+          <div class="tv-market-info">
+            <span id="marketStatusText" class="tv-market-title">MARKET CLOSED</span>
+            <span id="marketStatusSub" class="tv-market-sub">Opens 09:15 AM IST</span>
+          </div>
+        </div>
+
+        <button id="refreshBtn" class="tv-icon-btn" title="Refresh Feed">
+          <i data-lucide="rotate-cw"></i>
+        </button>
+
+        <div class="tv-divider"></div>
+
+        <button id="zoomInBtn" class="tv-icon-btn" title="Zoom In (+)">
+          <i data-lucide="zoom-in"></i>
+        </button>
+        <button id="zoomOutBtn" class="tv-icon-btn" title="Zoom Out (-)">
+          <i data-lucide="zoom-out"></i>
+        </button>
+        <button id="resetZoomBtn" class="tv-icon-btn" title="Reset View (Auto)">
+          <i data-lucide="maximize-2"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- CHART WORKSPACE -->
+    <div class="tv-chart-viewport">
+      <!-- TOP ASYNC PROGRESS LOADER -->
+      <div id="chartLoadingBar" class="tv-loading-bar"></div>
+      <!-- CURRENT TICKER INFO OVERLAY (Top-Left of chart) -->
+      <div class="tv-ticker-hud">
+        <div class="tv-ticker-main">
+          <span id="activeTickerTitle" class="tv-symbol-name">NIFTY 50</span>
+          <span class="tv-tf-tag" id="activeTimeframeBadge">5m</span>
+          <span id="activePrice" class="tv-last-price">--</span>
+          <span id="priceChange" class="tv-chg-pill neutral">--</span>
+        </div>
+        <div class="tv-ticker-meta">
+          <span>O: <b id="barO">--</b></span>
+          <span>H: <b id="barH">--</b></span>
+          <span>L: <b id="barL">--</b></span>
+          <span>C: <b id="barC">--</b></span>
+        </div>
+      </div>
+
+      <!-- PINE SCRIPT TOP-RIGHT FLOATING TABLE HUD (1:1 with TradingView Pine script) -->
+      <div class="tv-pine-table-hud">
+        <div class="tv-pine-table-header">
+          <div class="tv-pine-title">
+            <span class="tv-pine-logo">▲</span> ICT Predictive
+          </div>
+          <span id="dashSignalBadge" class="tv-pine-badge hold">HOLD</span>
+        </div>
+        <table class="tv-pine-table">
+          <tbody>
+            <tr>
+              <td class="tv-td-lbl">Signal</td>
+              <td class="tv-td-val" id="dashSignal">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">IPDA Phase</td>
+              <td class="tv-td-val" id="dashIPDA">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Last Entry Model</td>
+              <td class="tv-td-val" id="dashModel">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">CISD State</td>
+              <td class="tv-td-val" id="dashCISD">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Bull Sweep Active</td>
+              <td class="tv-td-val" id="dashBullSweep">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Bear Sweep Active</td>
+              <td class="tv-td-val" id="dashBearSweep">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">PDH / PDL</td>
+              <td class="tv-td-val font-mono" id="dashPDHPDL">-- / --</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">In Killzone</td>
+              <td class="tv-td-val" id="dashKZ">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Silver Bullet</td>
+              <td class="tv-td-val" id="dashSB">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">HTF Bias (30m)</td>
+              <td class="tv-td-val" id="dashHTFBias">--</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Market Status</td>
+              <td class="tv-td-val" id="dashMarketStatus">CLOSED</td>
+            </tr>
+            <tr>
+              <td class="tv-td-lbl">Mode</td>
+              <td class="tv-td-val" id="dashMode">Live/Predictive</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- MAIN TRADINGVIEW LIGHTWEIGHT CHART -->
+      <div id="tradingviewChart" class="tv-chart-stage"></div>
+
+      <!-- TRADINGVIEW FLOATING ZOOM & AUTO BAR -->
+      <div class="tv-floating-zoom-bar">
+        <button id="floatZoomIn" class="tv-zoom-pill-btn" title="Zoom In (+)">+</button>
+        <button id="floatZoomOut" class="tv-zoom-pill-btn" title="Zoom Out (−)">−</button>
+        <button id="floatResetZoom" class="tv-zoom-pill-btn auto" title="Auto Scale / Reset View">Auto</button>
+      </div>
+
+      <!-- BOTTOM BAR FOR RECENT ALERTS -->
+      <div class="tv-bottom-bar">
+        <div class="tv-bottom-feed-title">
+          <i data-lucide="bell" style="width:14px; height:14px;"></i> SIGNAL ALERTS:
+        </div>
+        <div class="tv-alerts-ticker" id="signalsFeed">
+          <span class="tv-alert-empty">Monitoring real-time order flow for liquidity sweeps and FVG touches...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/chart.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
