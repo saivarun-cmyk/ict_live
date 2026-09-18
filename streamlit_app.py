@@ -722,9 +722,13 @@ full_html = f"""<!DOCTYPE html>
       const WS_FEED_URL = {ws_url_json};
       let lastLivePrice = 0;
 
+      function normKey(k) {{
+        return (k || '').toLowerCase().replace(/[:|_]/g, ' ').replace(/ +/g, ' ').trim();
+      }}
+
       // Apply live incoming tick directly to UI and Lightweight Chart
       function applyLiveTick(key, livePrice, prevClose) {{
-        if (key !== currentInstrument && key !== currentInstrument.replace('|', ':')) return;
+        if (normKey(key) !== normKey(currentInstrument)) return;
         if (livePrice <= 0) return;
 
         // 1. Flash active price green on uptick, red on downtick
@@ -748,33 +752,49 @@ full_html = f"""<!DOCTYPE html>
 
         // 3. Dynamic active candlestick update on TradingView chart
         if (lastCandles && lastCandles.length > 0 && chart && chart.candleSeries) {{
-          const lastBar = lastCandles[lastCandles.length - 1];
-          const nowSec = Math.floor(Date.now() / 1000);
+          try {{
+            const lastBar = lastCandles[lastCandles.length - 1];
+            const nowSec = Math.floor(Date.now() / 1000);
 
-          let stepSec = 300;
-          if (currentTimeframe === '1m') stepSec = 60;
-          else if (currentTimeframe === '15m') stepSec = 900;
+            let stepSec = 300;
+            if (currentTimeframe === '1m') stepSec = 60;
+            else if (currentTimeframe === '15m') stepSec = 900;
 
-          const candleStart = Math.floor(nowSec / stepSec) * stepSec;
+            const candleStart = Math.floor(nowSec / stepSec) * stepSec;
 
-          if (candleStart > lastBar.time) {{
-            const newBar = {{
-              time: candleStart,
-              open: livePrice,
-              high: livePrice,
-              low: livePrice,
-              close: livePrice,
-              volume: 0
-            }};
-            lastCandles.push(newBar);
-            chart.candleSeries.update(newBar);
-            updateOHLC(newBar);
-          }} else {{
-            lastBar.high = Math.max(lastBar.high, livePrice);
-            lastBar.low = Math.min(lastBar.low, livePrice);
-            lastBar.close = livePrice;
-            chart.candleSeries.update(lastBar);
-            updateOHLC(lastBar);
+            if (candleStart > lastBar.time) {{
+              const newBar = {{
+                time: candleStart,
+                open: livePrice,
+                high: livePrice,
+                low: livePrice,
+                close: livePrice
+              }};
+              lastCandles.push(newBar);
+              if (chart.candles) chart.candles.push(newBar);
+              chart.candleSeries.update(newBar);
+              updateOHLC(newBar);
+            }} else {{
+              lastBar.high = Math.max(lastBar.high, livePrice);
+              lastBar.low = Math.min(lastBar.low, livePrice);
+              lastBar.close = livePrice;
+              if (chart.candles && chart.candles.length > 0) {{
+                const cb = chart.candles[chart.candles.length - 1];
+                cb.high = lastBar.high;
+                cb.low = lastBar.low;
+                cb.close = lastBar.close;
+              }}
+              chart.candleSeries.update({{
+                time: lastBar.time,
+                open: lastBar.open,
+                high: lastBar.high,
+                low: lastBar.low,
+                close: lastBar.close
+              }});
+              updateOHLC(lastBar);
+            }}
+          }} catch (err) {{
+            console.warn('Candle tick update error:', err);
           }}
         }}
       }}

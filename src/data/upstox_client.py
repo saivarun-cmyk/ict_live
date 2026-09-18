@@ -52,32 +52,49 @@ class UpstoxClient:
             # Upstox v2 only supports 1minute, 30minute, day, week, month
             req_interval = "1minute" if ("1minute" in interval or "5minute" in interval or "15minute" in interval) else "30minute"
             url = f"{self.base_url}/historical-candle/{encoded_key}/{req_interval}/{to_date}/{from_date}"
+            # 1. Fetch past historical candles
+            past_candles = []
             try:
                 resp = requests.get(url, headers=headers, timeout=6)
                 if resp.status_code == 200:
-                    data = resp.json().get("data", {}).get("candles", [])
-                    if data and len(data) > 20:
-                        raw_candles: List[Candle] = []
-                        for row in reversed(data):
-                            ts = int(datetime.fromisoformat(row[0].replace("Z", "+00:00")).timestamp())
-                            raw_candles.append(Candle(
-                                timestamp=ts,
-                                open=float(row[1]),
-                                high=float(row[2]),
-                                low=float(row[3]),
-                                close=float(row[4]),
-                                volume=float(row[5])
-                            ))
-                        from .candle_builder import aggregate_candles
-                        if "5minute" in interval:
-                            return aggregate_candles(raw_candles, target_minutes=5)
-                        elif "15minute" in interval:
-                            return aggregate_candles(raw_candles, target_minutes=15)
-                        return raw_candles
-                else:
-                    logger.warning(f"Upstox API returned {resp.status_code}: {resp.text[:200]}")
+                    past_candles = resp.json().get("data", {}).get("candles", [])
             except Exception as e:
-                logger.warning(f"Live fetch exception for {instrument_key}: {e}")
+                logger.warning(f"Past candles fetch failed for {instrument_key}: {e}")
+
+            # 2. Fetch today's live intraday candles (09:15 to current minute)
+            intra_candles = []
+            try:
+                intra_url = f"{self.base_url}/historical-candle/intraday/{encoded_key}/{req_interval}"
+                resp_intra = requests.get(intra_url, headers=headers, timeout=6)
+                if resp_intra.status_code == 200:
+                    intra_candles = resp_intra.json().get("data", {}).get("candles", [])
+            except Exception as e:
+                logger.warning(f"Intraday candles fetch failed for {instrument_key}: {e}")
+
+            # 3. Combine past + intraday
+            combined = list(reversed(past_candles)) + list(reversed(intra_candles))
+            if combined and len(combined) > 10:
+                raw_candles: List[Candle] = []
+                seen_ts = set()
+                for row in combined:
+                    ts = int(datetime.fromisoformat(row[0].replace("Z", "+00:00")).timestamp())
+                    if ts not in seen_ts:
+                        seen_ts.add(ts)
+                        raw_candles.append(Candle(
+                            timestamp=ts,
+                            open=float(row[1]),
+                            high=float(row[2]),
+                            low=float(row[3]),
+                            close=float(row[4]),
+                            volume=float(row[5])
+                        ))
+                raw_candles.sort(key=lambda x: x.timestamp)
+                from .candle_builder import aggregate_candles
+                if "5minute" in interval:
+                    return aggregate_candles(raw_candles, target_minutes=5)
+                elif "15minute" in interval:
+                    return aggregate_candles(raw_candles, target_minutes=15)
+                return raw_candles
 
         # Generate realistic IST market session candles
         return self.generate_synthetic_history(instrument_key, interval=interval, days=days)
