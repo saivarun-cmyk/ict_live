@@ -76,3 +76,8 @@ telegram:
     - TP_HIT
     - SL_HIT
     - TIME_BOXED_EXIT
+
+upstox:
+  api_base: "https://api.upstox.com/v2"
+  access_token: "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI4NTEwOTgiLCJqdGkiOiI2YTRlOGViMjY2YjM1OTJkOTI0NzRjODgiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6dHJ1ZSwiaXNFeHRlbmRlZCI6dHJ1ZSwiaWF0IjoxNzgzNTMzMjM0LCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE4MTUwODQwMDB9.X4twV9T754kWm7h09GmEe_7OavbGGC4hG1nlKSUrpR0"
+  mock_replay: false

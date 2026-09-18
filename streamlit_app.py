@@ -181,6 +181,7 @@ with open(os.path.join(BASE_DIR, "web", "js", "chart.js")) as f:
     chart_js_content = f.read()
 
 data_json = json.dumps(preloaded_data)
+token_json = json.dumps(token)
 
 # Full self-contained TradingView application matching web/index.html 100%
 full_html = f"""<!DOCTYPE html>
@@ -700,6 +701,89 @@ full_html = f"""<!DOCTYPE html>
       }}
       updateMarketStatusUI();
       setInterval(updateMarketStatusUI, 1000);
+
+      // Real-time live market quote polling & ticking (Every 2.5s)
+      const UPSTOX_TOKEN = {token_json};
+      let lastLivePrice = 0;
+
+      async function pollLiveQuotes() {{
+        if (!UPSTOX_TOKEN || UPSTOX_TOKEN.length < 10) return;
+        try {{
+          const url = 'https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX%7CNifty%2050,NSE_INDEX%7CNifty%20Bank,BSE_INDEX%7CSENSEX';
+          const res = await fetch(url, {{
+            headers: {{
+              'Accept': 'application/json',
+              'Authorization': 'Bearer ' + UPSTOX_TOKEN
+            }}
+          }});
+          if (!res.ok) return;
+          const json = await res.json();
+          const data = json.data || {{}};
+
+          const qKey = currentInstrument.replace('|', ':');
+          const quote = data[qKey] || data[currentInstrument];
+          if (!quote || quote.last_price === undefined) return;
+
+          const livePrice = parseFloat(quote.last_price);
+          const netChg = quote.net_change !== undefined ? parseFloat(quote.net_change) : 0;
+
+          // Flash price green on uptick, red on downtick
+          if (activePrice) {{
+            if (lastLivePrice > 0 && livePrice !== lastLivePrice) {{
+              activePrice.style.color = livePrice > lastLivePrice ? 'var(--tv-bull)' : 'var(--tv-bear)';
+              setTimeout(() => {{ if (activePrice) activePrice.style.color = '#ffffff'; }}, 600);
+            }}
+            activePrice.textContent = livePrice.toFixed(2);
+            lastLivePrice = livePrice;
+          }}
+
+          if (priceChange) {{
+            const baseVal = livePrice - netChg;
+            const pct = baseVal > 0 ? (netChg / baseVal) * 100 : 0;
+            const sign = netChg >= 0 ? '+' : '';
+            priceChange.textContent = sign + netChg.toFixed(2) + ' (' + sign + pct.toFixed(2) + '%)';
+            priceChange.className = 'tv-chg-pill ' + (netChg >= 0 ? 'positive' : 'negative');
+          }}
+
+          // Update active candlestick in Lightweight Charts
+          if (lastCandles && lastCandles.length > 0 && chart && chart.candleSeries) {{
+            const lastBar = lastCandles[lastCandles.length - 1];
+            const nowSec = Math.floor(Date.now() / 1000);
+
+            let stepSec = 300;
+            if (currentTimeframe === '1m') stepSec = 60;
+            else if (currentTimeframe === '15m') stepSec = 900;
+
+            const candleStart = Math.floor(nowSec / stepSec) * stepSec;
+
+            if (candleStart > lastBar.time) {{
+              const newBar = {{
+                time: candleStart,
+                open: livePrice,
+                high: livePrice,
+                low: livePrice,
+                close: livePrice,
+                volume: 0
+              }};
+              lastCandles.push(newBar);
+              chart.candleSeries.update(newBar);
+              updateOHLC(newBar);
+            }} else {{
+              lastBar.high = Math.max(lastBar.high, livePrice);
+              lastBar.low = Math.min(lastBar.low, livePrice);
+              lastBar.close = livePrice;
+              chart.candleSeries.update(lastBar);
+              updateOHLC(lastBar);
+            }}
+          }}
+        }} catch (err) {{
+          console.warn('Live quote polling error:', err);
+        }}
+      }}
+
+      // Start live quote polling (every 2.5 seconds)
+      pollLiveQuotes();
+      setInterval(pollLiveQuotes, 2500);
 
       // Render Asset Data
       function renderAsset(key, isInitial = false) {{

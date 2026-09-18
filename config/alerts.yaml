@@ -1,0 +1,4 @@
+telegram: {enabled: true, watch: true, parse_mode: HTML, retries: 3, timeout_seconds: 10}
+email: {enabled: false, tls: true, retries: 3, timeout_seconds: 15}
+events: [ENTRY_READY, INVALIDATED, TP1_HIT, TP2_HIT, SYSTEM_ERROR]
+
