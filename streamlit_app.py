@@ -105,6 +105,21 @@ engine = ICTPredictiveEngine(settings_cfg)
 data_client = UpstoxClient(access_token=token)
 notifier = TelegramNotifier()
 
+def get_upstox_ws_url(access_token: str) -> str:
+    if not access_token or len(access_token) < 10:
+        return ""
+    try:
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {access_token}"}
+        resp = requests.get("https://api.upstox.com/v3/feed/market-data-feed/authorize", headers=headers, timeout=4)
+        if resp.status_code == 200:
+            return resp.json().get("data", {}).get("authorized_redirect_uri", "") or resp.json().get("data", {}).get("authorizedRedirectUri", "")
+    except Exception:
+        pass
+    return ""
+
+ws_feed_url = get_upstox_ws_url(token)
+ws_url_json = json.dumps(ws_feed_url)
+
 # Maintain alerted signals in session state so we don't spam duplicate alerts
 if "notified_signals" not in st.session_state:
     st.session_state["notified_signals"] = set()
@@ -702,10 +717,199 @@ full_html = f"""<!DOCTYPE html>
       updateMarketStatusUI();
       setInterval(updateMarketStatusUI, 1000);
 
-      // Real-time live market quote polling & ticking (Every 2.5s)
+      // Direct Real-Time Live Feed Engine (Upstox WebSocket V3 + Fallback Poller)
       const UPSTOX_TOKEN = {token_json};
+      const WS_FEED_URL = {ws_url_json};
       let lastLivePrice = 0;
 
+      // Apply live incoming tick directly to UI and Lightweight Chart
+      function applyLiveTick(key, livePrice, prevClose) {{
+        if (key !== currentInstrument && key !== currentInstrument.replace('|', ':')) return;
+        if (livePrice <= 0) return;
+
+        // 1. Flash active price green on uptick, red on downtick
+        if (activePrice) {{
+          if (lastLivePrice > 0 && livePrice !== lastLivePrice) {{
+            activePrice.style.color = livePrice > lastLivePrice ? 'var(--tv-bull)' : 'var(--tv-bear)';
+            setTimeout(() => {{ if (activePrice) activePrice.style.color = '#ffffff'; }}, 500);
+          }}
+          activePrice.textContent = livePrice.toFixed(2);
+          lastLivePrice = livePrice;
+        }}
+
+        // 2. Net change and percentage
+        if (priceChange && prevClose > 0) {{
+          const netChg = livePrice - prevClose;
+          const pct = (netChg / prevClose) * 100;
+          const sign = netChg >= 0 ? '+' : '';
+          priceChange.textContent = sign + netChg.toFixed(2) + ' (' + sign + pct.toFixed(2) + '%)';
+          priceChange.className = 'tv-chg-pill ' + (netChg >= 0 ? 'positive' : 'negative');
+        }}
+
+        // 3. Dynamic active candlestick update on TradingView chart
+        if (lastCandles && lastCandles.length > 0 && chart && chart.candleSeries) {{
+          const lastBar = lastCandles[lastCandles.length - 1];
+          const nowSec = Math.floor(Date.now() / 1000);
+
+          let stepSec = 300;
+          if (currentTimeframe === '1m') stepSec = 60;
+          else if (currentTimeframe === '15m') stepSec = 900;
+
+          const candleStart = Math.floor(nowSec / stepSec) * stepSec;
+
+          if (candleStart > lastBar.time) {{
+            const newBar = {{
+              time: candleStart,
+              open: livePrice,
+              high: livePrice,
+              low: livePrice,
+              close: livePrice,
+              volume: 0
+            }};
+            lastCandles.push(newBar);
+            chart.candleSeries.update(newBar);
+            updateOHLC(newBar);
+          }} else {{
+            lastBar.high = Math.max(lastBar.high, livePrice);
+            lastBar.low = Math.min(lastBar.low, livePrice);
+            lastBar.close = livePrice;
+            chart.candleSeries.update(lastBar);
+            updateOHLC(lastBar);
+          }}
+        }}
+      }}
+
+      // Fast Protobuf Decoder for Upstox Market Feed V3
+      function decodeMarketFeed(bytes) {{
+        function readVarint(b, offset) {{
+          let val = 0n, shift = 0n;
+          while (offset < b.length) {{
+            const byte = BigInt(b[offset++]);
+            val |= (byte & 0x7Fn) << shift;
+            if (!(byte & 0x80n)) return [Number(val), offset];
+            shift += 7n;
+            if (shift > 63n) break;
+          }}
+          return [Number(val), offset];
+        }}
+        function* parseFields(b, start = 0, end = b.length) {{
+          let offset = start;
+          while (offset < end) {{
+            const [tag, nextOffset] = readVarint(b, offset);
+            offset = nextOffset;
+            const number = tag >> 3, wire = tag & 7;
+            if (wire === 0) {{
+              const [val, o2] = readVarint(b, offset);
+              offset = o2;
+              yield {{ number, wire, val }};
+            }} else if (wire === 1) {{
+              const slice = b.slice(offset, offset + 8);
+              offset += 8;
+              yield {{ number, wire, val: slice }};
+            }} else if (wire === 2) {{
+              const [len, o2] = readVarint(b, offset);
+              const slice = b.slice(o2, o2 + len);
+              offset = o2 + len;
+              yield {{ number, wire, val: slice }};
+            }} else if (wire === 5) {{
+              const slice = b.slice(offset, offset + 4);
+              offset += 4;
+              yield {{ number, wire, val: slice }};
+            }} else {{
+              break;
+            }}
+          }}
+        }}
+        function findNested(b, fieldNum) {{
+          for (const f of parseFields(b)) {{
+            if (f.number === fieldNum && f.wire === 2) return f.val;
+          }}
+          return null;
+        }}
+        function parseLtpc(b) {{
+          const vals = {{}};
+          for (const f of parseFields(b)) vals[f.number] = f.val;
+          let ltp = 0, close = 0;
+          if (vals[1]) {{
+            const dv = new DataView(vals[1].buffer, vals[1].byteOffset, 8);
+            ltp = dv.getFloat64(0, true);
+          }}
+          if (vals[4]) {{
+            const dv = new DataView(vals[4].buffer, vals[4].byteOffset, 8);
+            close = dv.getFloat64(0, true);
+          }}
+          return {{ ltp, close }};
+        }}
+
+        const ticks = [];
+        for (const f of parseFields(bytes)) {{
+          if (f.number === 2 && f.wire === 2) {{
+            const entry = f.val;
+            const keyBytes = findNested(entry, 1);
+            const feed = findNested(entry, 2);
+            if (!keyBytes || !feed) continue;
+            let ltpc = findNested(feed, 1);
+            if (!ltpc) {{
+              const full = findNested(feed, 2);
+              let union = full ? findNested(full, 1) : null;
+              if (!union && full) union = findNested(full, 2);
+              if (union) ltpc = findNested(union, 1);
+            }}
+            if (!ltpc) continue;
+            const {{ ltp, close }} = parseLtpc(ltpc);
+            if (ltp > 0) {{
+              const key = new TextDecoder().decode(keyBytes);
+              ticks.push({{ key, ltp, close }});
+            }}
+          }}
+        }}
+        return ticks;
+      }}
+
+      // Connect Direct Upstox Live WebSocket Feed
+      function connectLiveFeed() {{
+        if (!WS_FEED_URL || WS_FEED_URL.length < 10) return;
+        try {{
+          const ws = new WebSocket(WS_FEED_URL);
+          ws.binaryType = 'arraybuffer';
+
+          ws.onopen = () => {{
+            console.log('⚡ Direct Upstox Live Feed WebSocket Connected');
+            const sub = {{
+              guid: 'ict-live-feed',
+              method: 'sub',
+              data: {{
+                mode: 'ltpc',
+                instrumentKeys: ['NSE_INDEX|Nifty 50', 'NSE_INDEX|Nifty Bank', 'BSE_INDEX|SENSEX']
+              }}
+            }};
+            ws.send(JSON.stringify(sub));
+          }};
+
+          ws.onmessage = (event) => {{
+            if (event.data instanceof ArrayBuffer) {{
+              const bytes = new Uint8Array(event.data);
+              const ticks = decodeMarketFeed(bytes);
+              for (const t of ticks) {{
+                applyLiveTick(t.key, t.ltp, t.close);
+              }}
+            }}
+          }};
+
+          ws.onerror = (e) => console.warn('WebSocket live feed error, falling back to polling');
+          ws.onclose = () => {{
+            console.log('WebSocket closed, attempting reconnect in 3s');
+            setTimeout(connectLiveFeed, 3000);
+          }};
+        }} catch (err) {{
+          console.warn('Live WebSocket init error:', err);
+        }}
+      }}
+
+      // Start direct live websocket feed immediately
+      connectLiveFeed();
+
+      // Fallback Polling (Every 3s) to ensure uninterrupted data
       async function pollLiveQuotes() {{
         if (!UPSTOX_TOKEN || UPSTOX_TOKEN.length < 10) return;
         try {{
@@ -726,64 +930,14 @@ full_html = f"""<!DOCTYPE html>
 
           const livePrice = parseFloat(quote.last_price);
           const netChg = quote.net_change !== undefined ? parseFloat(quote.net_change) : 0;
+          const prevClose = livePrice - netChg;
 
-          // Flash price green on uptick, red on downtick
-          if (activePrice) {{
-            if (lastLivePrice > 0 && livePrice !== lastLivePrice) {{
-              activePrice.style.color = livePrice > lastLivePrice ? 'var(--tv-bull)' : 'var(--tv-bear)';
-              setTimeout(() => {{ if (activePrice) activePrice.style.color = '#ffffff'; }}, 600);
-            }}
-            activePrice.textContent = livePrice.toFixed(2);
-            lastLivePrice = livePrice;
-          }}
-
-          if (priceChange) {{
-            const baseVal = livePrice - netChg;
-            const pct = baseVal > 0 ? (netChg / baseVal) * 100 : 0;
-            const sign = netChg >= 0 ? '+' : '';
-            priceChange.textContent = sign + netChg.toFixed(2) + ' (' + sign + pct.toFixed(2) + '%)';
-            priceChange.className = 'tv-chg-pill ' + (netChg >= 0 ? 'positive' : 'negative');
-          }}
-
-          // Update active candlestick in Lightweight Charts
-          if (lastCandles && lastCandles.length > 0 && chart && chart.candleSeries) {{
-            const lastBar = lastCandles[lastCandles.length - 1];
-            const nowSec = Math.floor(Date.now() / 1000);
-
-            let stepSec = 300;
-            if (currentTimeframe === '1m') stepSec = 60;
-            else if (currentTimeframe === '15m') stepSec = 900;
-
-            const candleStart = Math.floor(nowSec / stepSec) * stepSec;
-
-            if (candleStart > lastBar.time) {{
-              const newBar = {{
-                time: candleStart,
-                open: livePrice,
-                high: livePrice,
-                low: livePrice,
-                close: livePrice,
-                volume: 0
-              }};
-              lastCandles.push(newBar);
-              chart.candleSeries.update(newBar);
-              updateOHLC(newBar);
-            }} else {{
-              lastBar.high = Math.max(lastBar.high, livePrice);
-              lastBar.low = Math.min(lastBar.low, livePrice);
-              lastBar.close = livePrice;
-              chart.candleSeries.update(lastBar);
-              updateOHLC(lastBar);
-            }}
-          }}
+          applyLiveTick(currentInstrument, livePrice, prevClose);
         }} catch (err) {{
-          console.warn('Live quote polling error:', err);
+          console.warn('Live quote polling fallback error:', err);
         }}
       }}
-
-      // Start live quote polling (every 2.5 seconds)
-      pollLiveQuotes();
-      setInterval(pollLiveQuotes, 2500);
+      setInterval(pollLiveQuotes, 3000);
 
       // Render Asset Data
       function renderAsset(key, isInitial = false) {{
