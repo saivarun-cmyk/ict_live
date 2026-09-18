@@ -51,21 +51,39 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+from dotenv import load_dotenv
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 1. Load .env file first
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+DEFAULT_UPSTOX_TOKEN = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI4NTEwOTgiLCJqdGkiOiI2YTRlOGViMjY2YjM1OTJkOTI0NzRjODgiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6dHJ1ZSwiaXNFeHRlbmRlZCI6dHJ1ZSwiaWF0IjoxNzgzNTMzMjM0LCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE4MTUwODQwMDB9.X4twV9T754kWm7h09GmEe_7OavbGGC4hG1nlKSUrpR0"
+DEFAULT_BOT_TOKEN = "8872382518:AAHoMvQ7B4bo1ksGj1Codo78Xy9M-hdIgck"
+DEFAULT_CHAT_ID = "919617691"
+
 # Helper to read secrets from st.secrets (Streamlit Cloud) or .env / os.environ
 def get_secret(key: str, default: str = "") -> str:
     try:
         if hasattr(st, "secrets") and key in st.secrets:
-            return str(st.secrets[key])
+            val = str(st.secrets[key]).strip()
+            if val:
+                return val
     except Exception:
         pass
-    return os.getenv(key, default)
-
-for k in ["UPSTOX_ACCESS_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "MOCK_REPLAY"]:
-    val = get_secret(k)
+    val = os.getenv(key, "").strip()
     if val:
-        os.environ[k] = val
+        return val
+    return default
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+token = get_secret("UPSTOX_ACCESS_TOKEN", DEFAULT_UPSTOX_TOKEN)
+bot_token = get_secret("TELEGRAM_BOT_TOKEN", DEFAULT_BOT_TOKEN)
+chat_id = get_secret("TELEGRAM_CHAT_ID", DEFAULT_CHAT_ID)
+mock_mode = get_secret("MOCK_REPLAY", "false")
+
+os.environ["UPSTOX_ACCESS_TOKEN"] = token
+os.environ["TELEGRAM_BOT_TOKEN"] = bot_token
+os.environ["TELEGRAM_CHAT_ID"] = chat_id
+os.environ["MOCK_REPLAY"] = mock_mode
 
 @st.cache_data
 def load_config():
@@ -78,7 +96,7 @@ def load_config():
 settings_cfg, instruments_cfg = load_config()
 
 engine = ICTPredictiveEngine(settings_cfg)
-data_client = UpstoxClient()
+data_client = UpstoxClient(access_token=token)
 notifier = TelegramNotifier()
 
 # Maintain alerted signals in session state so we don't spam duplicate alerts
@@ -107,9 +125,9 @@ def dispatch_alerts_for_result(instrument_name: str, tf_label: str, result: dict
 # Preload data for all 3 indices across 1m, 5m, and 15m timeframes
 indices = instruments_cfg.get("indices", [])
 timeframe_configs = [
-    ("1m", "1minute", 2),
-    ("5m", "5minute", 4),
-    ("15m", "15minute", 8)
+    ("1m", "1minute", 5),
+    ("5m", "5minute", 7),
+    ("15m", "15minute", 10)
 ]
 
 preloaded_data = {}

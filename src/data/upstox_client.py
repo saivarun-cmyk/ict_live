@@ -33,13 +33,13 @@ class UpstoxClient:
         self,
         instrument_key: str,
         interval: str = "5minute",
-        days: int = 4
+        days: int = 7
     ) -> List[Candle]:
         """
         Fetches historical candles from Upstox v2 API, or generates realistic
         IST trading-session candles (09:15 - 15:30) with ICT patterns.
         """
-        mock_replay = os.getenv("MOCK_REPLAY", "true").lower() == "true"
+        mock_replay = os.getenv("MOCK_REPLAY", "false").lower() == "true"
         if not mock_replay and self.is_configured():
             headers = {
                 "Accept": "application/json",
@@ -96,14 +96,14 @@ class UpstoxClient:
           and afternoon expansion (Killzone 2: 13:30-15:00) with liquidity sweeps and FVGs!
         """
         base_prices = {
-            "NSE_INDEX|Nifty 50": 25420.0,
-            "NSE_INDEX|Nifty Bank": 53800.0,
-            "BSE_INDEX|SENSEX": 82950.0,
-            "NSE_EQ|INE002A01018": 3020.0,
-            "NSE_EQ|INE040A01034": 1680.0,
-            "NSE_EQ|INE467B01029": 4480.0,
-            "NSE_EQ|INE009A01021": 1920.0,
-            "NSE_EQ|INE090A01021": 1240.0,
+            "NSE_INDEX|Nifty 50": 23270.60,
+            "NSE_INDEX|Nifty Bank": 56055.75,
+            "BSE_INDEX|SENSEX": 74314.59,
+            "NSE_EQ|INE002A01018": 2980.0,
+            "NSE_EQ|INE040A01034": 1650.0,
+            "NSE_EQ|INE467B01029": 4420.0,
+            "NSE_EQ|INE009A01021": 1910.0,
+            "NSE_EQ|INE090A01021": 1230.0,
         }
         price = base_prices.get(instrument_key, 25000.0)
 
@@ -128,6 +128,9 @@ class UpstoxClient:
         random.seed(inst_seed)  # Unique realistic patterns per instrument
 
         volatility = price * 0.001
+        kz1_disp = [(inst_seed % 5) + 5, ((inst_seed >> 3) % 5) + 11]
+        kz2_disp = [((inst_seed >> 6) % 6) + 38, ((inst_seed >> 9) % 6) + 47]
+        sweep_bars = [(inst_seed % 4) + 3, ((inst_seed >> 4) % 6) + 16, ((inst_seed >> 8) % 6) + 43]
 
         for day_idx, t_date in enumerate(trading_dates):
             # Market open at 09:15 IST
@@ -169,7 +172,7 @@ class UpstoxClient:
                     bar_vol = volatility * 0.5  # Consolidation
 
                 # Create 3-candle FVG displacement periodically in Killzones
-                if (is_kz1 and bar_in_day in [6, 12]) or (is_kz2 and bar_in_day in [40, 50]):
+                if (is_kz1 and bar_in_day in kz1_disp) or (is_kz2 and bar_in_day in kz2_disp):
                     # Strong displacement candle (creates FVG)
                     delta = day_bias * bar_vol * 2.8
                     wick_opp = bar_vol * 0.2
@@ -190,7 +193,7 @@ class UpstoxClient:
                     lo = cl - wick_trend
 
                 # Occasional liquidity hunt wick (penetrates previous swings)
-                if bar_in_day in [4, 18, 45]:
+                if bar_in_day in sweep_bars:
                     if day_bias > 0:
                         lo -= bar_vol * 1.8  # Sell-side sweep wick
                     else:
