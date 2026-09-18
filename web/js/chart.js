@@ -63,7 +63,7 @@ class ICTPrimitive {
     const refXPrev = timeScale.logicalToCoordinate(refBar - 1);
     const estBarSpacing = (refX !== null && refXPrev !== null && Math.abs(refX - refXPrev) > 0.1)
       ? (refX - refXPrev)
-      : 18;
+      : 8;
 
     const barToX = idx => {
       const x = timeScale.logicalToCoordinate(idx);
@@ -388,9 +388,22 @@ class ICTChart {
         textColor: '#d1d4dc',
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif"
       },
+      localization: {
+        locale: 'en-IN',
+        dateFormat: 'dd MMM yyyy',
+        timeFormatter: (timestamp) => {
+          const date = new Date(timestamp * 1000);
+          return new Intl.DateTimeFormat('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+          }).format(date);
+        }
+      },
       grid: {
-        vertLines: { color: 'rgba(42, 46, 57, 0.4)' },
-        horzLines: { color: 'rgba(42, 46, 57, 0.4)' }
+        vertLines: { color: 'rgba(42, 46, 57, 0.3)' },
+        horzLines: { color: 'rgba(42, 46, 57, 0.3)' }
       },
       crosshair: {
         mode: LightweightCharts.CrosshairMode.Normal,
@@ -400,7 +413,7 @@ class ICTChart {
       rightPriceScale: {
         borderColor: '#2a2e39',
         visible: true,
-        scaleMargins: { top: 0.12, bottom: 0.12 },
+        scaleMargins: { top: 0.08, bottom: 0.08 },
         autoScale: true,
         alignLabels: true
       },
@@ -408,15 +421,32 @@ class ICTChart {
         borderColor: '#2a2e39',
         timeVisible: true,
         secondsVisible: false,
-        barSpacing: 18,
-        minBarSpacing: 3,
-        rightOffset: 12,
+        barSpacing: 8,
+        minBarSpacing: 2,
+        rightOffset: 5,
         shiftVisibleRangeOnNewBar: true,
-        allowBoldLabels: true
+        allowBoldLabels: true,
+        tickMarkFormatter: (time, tickMarkType, locale) => {
+          const date = new Date(time * 1000);
+          const parts = new Intl.DateTimeFormat('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit',
+            day: '2-digit',
+            month: 'short'
+          }).formatToParts(date);
+          const p = {};
+          for (const item of parts) p[item.type] = item.value;
+          if (tickMarkType === 0) {
+            return p.day + ' ' + p.month;
+          }
+          return p.hour + ':' + p.minute;
+        }
       }
     });
 
-    // Bright, high-contrast, thick TradingView candlesticks
+    // Sharp, high-contrast Upstox/TradingView styled candlesticks
     this.candleSeries = this.chart.addCandlestickSeries({
       upColor: '#089981',
       downColor: '#f23645',
@@ -425,7 +455,12 @@ class ICTChart {
       borderDownColor: '#f23645',
       wickVisible: true,
       wickUpColor: '#089981',
-      wickDownColor: '#f23645'
+      wickDownColor: '#f23645',
+      priceLineVisible: true,
+      lastValueVisible: true,
+      priceLineWidth: 1,
+      priceLineColor: '#2962ff',
+      priceLineStyle: LightweightCharts.LineStyle.Dotted
     });
 
     // Attach native series primitive safely
@@ -490,17 +525,23 @@ class ICTChart {
     });
 
     // 5. Handle horizontal logical time scale
-    if (isInitial) {
+    if (isInitial || !this._lastCandleCount || Math.abs(this._lastCandleCount - n) > 15) {
       this.chart.timeScale().setVisibleLogicalRange({
-        from: Math.max(0, n - 70),
-        to: n + 10
+        from: Math.max(0, n - 85),
+        to: n + 5
       });
     } else {
       const currentRange = this.chart.timeScale().getVisibleLogicalRange();
-      if (currentRange) {
+      if (currentRange && currentRange.from < n) {
         this.chart.timeScale().setVisibleLogicalRange(currentRange);
+      } else {
+        this.chart.timeScale().setVisibleLogicalRange({
+          from: Math.max(0, n - 85),
+          to: n + 5
+        });
       }
     }
+    this._lastCandleCount = n;
 
     // 6. Add NEW price lines for the new asset (PDH / PDL)
     if (this.options.showLiq && this.indicators) {

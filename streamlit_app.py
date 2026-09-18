@@ -744,7 +744,7 @@ full_html = f"""<!DOCTYPE html>
       }}
 
       // Apply live incoming tick directly to UI and Lightweight Chart
-      function applyLiveTick(key, livePrice, prevClose) {{
+      function applyLiveTick(key, livePrice, prevClose, tickSec = 0) {{
         if (normKey(key) !== normKey(currentInstrument)) return;
         if (livePrice <= 0) return;
 
@@ -771,7 +771,7 @@ full_html = f"""<!DOCTYPE html>
         if (lastCandles && lastCandles.length > 0 && chart && chart.candleSeries) {{
           try {{
             const lastBar = lastCandles[lastCandles.length - 1];
-            const nowSec = Math.floor(Date.now() / 1000);
+            const nowSec = (tickSec && tickSec > 1700000000) ? tickSec : Math.floor(Date.now() / 1000);
 
             let stepSec = 300;
             if (currentTimeframe === '1m') stepSec = 60;
@@ -866,16 +866,19 @@ full_html = f"""<!DOCTYPE html>
         function parseLtpc(b) {{
           const vals = {{}};
           for (const f of parseFields(b)) vals[f.number] = f.val;
-          let ltp = 0, close = 0;
+          let ltp = 0, close = 0, ltt = 0;
           if (vals[1]) {{
             const dv = new DataView(vals[1].buffer, vals[1].byteOffset, 8);
             ltp = dv.getFloat64(0, true);
+          }}
+          if (vals[2]) {{
+            ltt = Number(vals[2]);
           }}
           if (vals[4]) {{
             const dv = new DataView(vals[4].buffer, vals[4].byteOffset, 8);
             close = dv.getFloat64(0, true);
           }}
-          return {{ ltp, close }};
+          return {{ ltp, close, ltt }};
         }}
 
         const ticks = [];
@@ -893,10 +896,10 @@ full_html = f"""<!DOCTYPE html>
               if (union) ltpc = findNested(union, 1);
             }}
             if (!ltpc) continue;
-            const {{ ltp, close }} = parseLtpc(ltpc);
+            const {{ ltp, close, ltt }} = parseLtpc(ltpc);
             if (ltp > 0) {{
               const key = new TextDecoder().decode(keyBytes);
-              ticks.push({{ key, ltp, close }});
+              ticks.push({{ key, ltp, close, ltt }});
             }}
           }}
         }}
@@ -928,7 +931,8 @@ full_html = f"""<!DOCTYPE html>
               const bytes = new Uint8Array(event.data);
               const ticks = decodeMarketFeed(bytes);
               for (const t of ticks) {{
-                applyLiveTick(t.key, t.ltp, t.close);
+                const tickSec = (t.ltt && t.ltt > 1700000000000) ? Math.floor(t.ltt / 1000) : 0;
+                applyLiveTick(t.key, t.ltp, t.close, tickSec);
               }}
             }}
           }};
