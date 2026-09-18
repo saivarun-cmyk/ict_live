@@ -100,7 +100,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const hudToggleBtn = document.getElementById('hudToggleBtn');
   const hudToggleIcon = document.getElementById('hudToggleIcon');
 
-  let isHudCollapsed = false;
+  let isHudCollapsed = window.innerWidth <= 768;
+  if (isHudCollapsed && pineTableHud && hudToggleIcon && hudToggleBtn) {
+    pineTableHud.classList.add('collapsed');
+    hudToggleIcon.textContent = '+';
+    hudToggleBtn.title = 'Expand HUD';
+  }
   if (hudToggleBtn) {
     hudToggleBtn.addEventListener('click', (e) => {
       e.stopPropagation();

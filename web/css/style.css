@@ -671,3 +671,160 @@ html, body {
   content: ' ⏳';
   font-size: 0.75rem;
 }
+
+/* ==========================================================================
+   RESPONSIVE DESIGN & MOBILE OPTIMIZATIONS (Smartphones & Tablets)
+   ========================================================================== */
+@media (max-width: 768px) {
+  /* 1. TOP TOOLBAR: Horizontal swipeable bar with zero clipping */
+  .tv-top-toolbar {
+    height: 44px;
+    min-height: 44px;
+    padding: 0 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+    -webkit-overflow-scrolling: touch;
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 6px;
+    width: 100vw;
+  }
+  .tv-top-toolbar::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+
+  .tv-toolbar-left, .tv-toolbar-right {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 5px;
+  }
+
+  /* Compact brand title on mobile */
+  .tv-brand .tv-title {
+    display: none;
+  }
+  .tv-logo-badge {
+    padding: 2px 5px;
+    font-size: 0.68rem;
+  }
+
+  /* Compact instrument & timeframe buttons */
+  .tv-tool-btn, .tv-tf-btn {
+    padding: 4px 7px;
+    font-size: 0.72rem;
+    flex-shrink: 0;
+  }
+
+  .tv-divider {
+    height: 18px;
+    margin: 0 2px;
+  }
+
+  /* Indicator Overlays & Chips */
+  .tv-toggle-group {
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .tv-chip {
+    font-size: 0.68rem;
+    padding: 2px 4px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.04);
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* Market badge */
+  .tv-market-badge {
+    padding: 2px 6px;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .tv-market-title {
+    font-size: 0.64rem;
+  }
+  .tv-market-sub {
+    display: none;
+  }
+
+  /* 2. TICKER HUD (Top-Left) */
+  .tv-ticker-hud {
+    top: 6px;
+    left: 8px;
+    gap: 2px;
+  }
+  .tv-symbol-name {
+    font-size: 0.92rem;
+  }
+  .tv-last-price {
+    font-size: 0.92rem;
+  }
+  .tv-tf-tag {
+    font-size: 0.65rem;
+    padding: 1px 4px;
+  }
+  .tv-chg-pill {
+    font-size: 0.68rem;
+    padding: 1px 4px;
+  }
+  .tv-ticker-meta {
+    font-size: 0.64rem;
+    gap: 5px;
+  }
+
+  /* 3. PINE SCRIPT FLOATING HUD (Top-Right) */
+  .tv-pine-table-hud {
+    top: 6px;
+    right: 8px;
+    width: auto;
+    max-width: calc(100vw - 16px);
+    padding: 6px 10px;
+  }
+  .tv-pine-table-hud:not(.collapsed) {
+    width: 250px;
+    max-height: 65vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    z-index: 35;
+  }
+  .tv-pine-table td {
+    padding: 2px 2px;
+    font-size: 0.68rem;
+  }
+
+  /* 4. FLOATING ZOOM BAR */
+  .tv-floating-zoom-bar {
+    bottom: 42px;
+    right: 8px;
+    padding: 1px 3px;
+    gap: 2px;
+  }
+  .tv-zoom-pill-btn {
+    padding: 3px 6px;
+    font-size: 0.68rem;
+  }
+
+  /* 5. BOTTOM RECENT SIGNALS BAR */
+  .tv-bottom-bar {
+    height: 34px;
+    min-height: 34px;
+    max-height: 34px;
+    padding: 0 8px;
+    gap: 8px;
+    font-size: 0.68rem;
+  }
+  .tv-bottom-feed-title {
+    font-size: 0.68rem;
+  }
+  .tv-alert-pill {
+    padding: 2px 6px;
+    font-size: 0.68rem;
+  }
+}

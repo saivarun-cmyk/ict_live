@@ -48,6 +48,12 @@ st.markdown("""
     display: block !important;
     overflow: hidden !important;
   }
+  @media (max-width: 768px) {
+    iframe {
+      height: 94vh !important;
+      min-height: 560px !important;
+    }
+  }
 </style>
 """, unsafe_allow_html=True)
 
@@ -181,7 +187,7 @@ full_html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>ICT Predictive Signals Engine</title>
   <!-- Lightweight Charts v4.2.1 -->
   <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
@@ -512,8 +518,13 @@ full_html = f"""<!DOCTYPE html>
       const hudToggleBtn = document.getElementById('hudToggleBtn');
       const hudToggleIcon = document.getElementById('hudToggleIcon');
 
-      // Collapse / Expand toggle
-      let isHudCollapsed = false;
+      // Collapse / Expand toggle (auto-collapsed on mobile)
+      let isHudCollapsed = window.innerWidth <= 768;
+      if (isHudCollapsed && pineTableHud && hudToggleIcon && hudToggleBtn) {{
+        pineTableHud.classList.add('collapsed');
+        hudToggleIcon.textContent = '+';
+        hudToggleBtn.title = 'Expand HUD';
+      }}
       if (hudToggleBtn) {{
         hudToggleBtn.addEventListener('click', (e) => {{
           e.stopPropagation();
