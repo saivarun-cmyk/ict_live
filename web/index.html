@@ -119,13 +119,19 @@
         </div>
       </div>
 
-      <!-- PINE SCRIPT TOP-RIGHT FLOATING TABLE HUD (1:1 with TradingView Pine script) -->
-      <div class="tv-pine-table-hud">
-        <div class="tv-pine-table-header">
+      <!-- PINE SCRIPT TOP-RIGHT FLOATING TABLE HUD (DRAGGABLE & COLLAPSIBLE) -->
+      <div class="tv-pine-table-hud" id="pineTableHud">
+        <div class="tv-pine-table-header" id="pineHudHeader" title="Drag to reposition anywhere on chart">
           <div class="tv-pine-title">
+            <span class="tv-pine-drag-handle">⠿</span>
             <span class="tv-pine-logo">▲</span> ICT Predictive
           </div>
-          <span id="dashSignalBadge" class="tv-pine-badge hold">HOLD</span>
+          <div class="tv-pine-header-actions">
+            <span id="dashSignalBadge" class="tv-pine-badge hold">HOLD</span>
+            <button id="hudToggleBtn" class="tv-hud-toggle-btn" title="Collapse / Expand HUD">
+              <span id="hudToggleIcon">−</span>
+            </button>
+          </div>
         </div>
         <table class="tv-pine-table">
           <tbody>

@@ -94,6 +94,82 @@ document.addEventListener('DOMContentLoaded', async () => {
   const dashMode = document.getElementById('dashMode');
   const signalsFeed = document.getElementById('signalsFeed');
 
+  // Draggable & Collapsible HUD Elements
+  const pineTableHud = document.getElementById('pineTableHud');
+  const pineHudHeader = document.getElementById('pineHudHeader');
+  const hudToggleBtn = document.getElementById('hudToggleBtn');
+  const hudToggleIcon = document.getElementById('hudToggleIcon');
+
+  let isHudCollapsed = false;
+  if (hudToggleBtn) {
+    hudToggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      isHudCollapsed = !isHudCollapsed;
+      if (isHudCollapsed) {
+        pineTableHud.classList.add('collapsed');
+        hudToggleIcon.textContent = '+';
+        hudToggleBtn.title = 'Expand HUD';
+      } else {
+        pineTableHud.classList.remove('collapsed');
+        hudToggleIcon.textContent = '−';
+        hudToggleBtn.title = 'Collapse HUD';
+      }
+    });
+  }
+
+  if (pineHudHeader && pineTableHud) {
+    let isDragging = false;
+    let startX = 0, startY = 0;
+    let startLeft = 0, startTop = 0;
+
+    pineHudHeader.addEventListener('mousedown', (e) => {
+      if (e.target.closest('#hudToggleBtn')) return;
+      isDragging = true;
+      pineTableHud.classList.add('is-dragging');
+
+      const rect = pineTableHud.getBoundingClientRect();
+      const parent = pineTableHud.offsetParent || document.body;
+      const parentRect = parent.getBoundingClientRect();
+
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = rect.left - parentRect.left;
+      startTop = rect.top - parentRect.top;
+
+      pineTableHud.style.right = 'auto';
+      pineTableHud.style.left = startLeft + 'px';
+      pineTableHud.style.top = startTop + 'px';
+
+      function onMouseMove(me) {
+        if (!isDragging) return;
+        me.preventDefault();
+        const dx = me.clientX - startX;
+        const dy = me.clientY - startY;
+
+        const pW = parent.clientWidth || window.innerWidth;
+        const pH = parent.clientHeight || window.innerHeight;
+        const hW = pineTableHud.offsetWidth;
+        const hH = pineTableHud.offsetHeight;
+
+        const newLeft = Math.max(8, Math.min(pW - hW - 8, startLeft + dx));
+        const newTop = Math.max(8, Math.min(pH - hH - 8, startTop + dy));
+
+        pineTableHud.style.left = newLeft + 'px';
+        pineTableHud.style.top = newTop + 'px';
+      }
+
+      function onMouseUp() {
+        isDragging = false;
+        pineTableHud.classList.remove('is-dragging');
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      }
+
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  }
+
   // Crosshair move handler to show live OHLC
   chart.chart.subscribeCrosshairMove(param => {
     if (!param || !param.time || !param.seriesData || !param.seriesData.get(chart.candleSeries)) {

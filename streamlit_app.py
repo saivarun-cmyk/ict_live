@@ -323,13 +323,19 @@ full_html = f"""<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- PINE SCRIPT TOP-RIGHT FLOATING TABLE HUD (1:1 with TradingView Pine script) -->
-      <div class="tv-pine-table-hud">
-        <div class="tv-pine-table-header">
+      <!-- PINE SCRIPT TOP-RIGHT FLOATING TABLE HUD (DRAGGABLE & COLLAPSIBLE) -->
+      <div class="tv-pine-table-hud" id="pineTableHud">
+        <div class="tv-pine-table-header" id="pineHudHeader" title="Drag to reposition anywhere on chart">
           <div class="tv-pine-title">
+            <span class="tv-pine-drag-handle">⠿</span>
             <span class="tv-pine-logo">▲</span> ICT Predictive
           </div>
-          <span id="dashSignalBadge" class="tv-pine-badge hold">HOLD</span>
+          <div class="tv-pine-header-actions">
+            <span id="dashSignalBadge" class="tv-pine-badge hold">HOLD</span>
+            <button id="hudToggleBtn" class="tv-hud-toggle-btn" title="Collapse / Expand HUD">
+              <span id="hudToggleIcon">−</span>
+            </button>
+          </div>
         </div>
         <table class="tv-pine-table">
           <tbody>
@@ -499,6 +505,133 @@ full_html = f"""<!DOCTYPE html>
       const dashSB = document.getElementById('dashSB');
       const dashHTFBias = document.getElementById('dashHTFBias');
       const signalsFeed = document.getElementById('signalsFeed');
+
+      // Draggable & Collapsible HUD Elements
+      const pineTableHud = document.getElementById('pineTableHud');
+      const pineHudHeader = document.getElementById('pineHudHeader');
+      const hudToggleBtn = document.getElementById('hudToggleBtn');
+      const hudToggleIcon = document.getElementById('hudToggleIcon');
+
+      // Collapse / Expand toggle
+      let isHudCollapsed = false;
+      if (hudToggleBtn) {{
+        hudToggleBtn.addEventListener('click', (e) => {{
+          e.stopPropagation();
+          isHudCollapsed = !isHudCollapsed;
+          if (isHudCollapsed) {{
+            pineTableHud.classList.add('collapsed');
+            hudToggleIcon.textContent = '+';
+            hudToggleBtn.title = 'Expand HUD';
+          }} else {{
+            pineTableHud.classList.remove('collapsed');
+            hudToggleIcon.textContent = '−';
+            hudToggleBtn.title = 'Collapse HUD';
+          }}
+        }});
+      }}
+
+      // Drag and Drop implementation
+      if (pineHudHeader && pineTableHud) {{
+        let isDragging = false;
+        let startX = 0, startY = 0;
+        let startLeft = 0, startTop = 0;
+
+        pineHudHeader.addEventListener('mousedown', (e) => {{
+          if (e.target.closest('#hudToggleBtn')) return;
+          isDragging = true;
+          pineTableHud.classList.add('is-dragging');
+
+          const rect = pineTableHud.getBoundingClientRect();
+          const parent = pineTableHud.offsetParent || document.body;
+          const parentRect = parent.getBoundingClientRect();
+
+          startX = e.clientX;
+          startY = e.clientY;
+          startLeft = rect.left - parentRect.left;
+          startTop = rect.top - parentRect.top;
+
+          pineTableHud.style.right = 'auto';
+          pineTableHud.style.left = startLeft + 'px';
+          pineTableHud.style.top = startTop + 'px';
+
+          function onMouseMove(me) {{
+            if (!isDragging) return;
+            me.preventDefault();
+            const dx = me.clientX - startX;
+            const dy = me.clientY - startY;
+
+            const pW = parent.clientWidth || window.innerWidth;
+            const pH = parent.clientHeight || window.innerHeight;
+            const hW = pineTableHud.offsetWidth;
+            const hH = pineTableHud.offsetHeight;
+
+            const newLeft = Math.max(8, Math.min(pW - hW - 8, startLeft + dx));
+            const newTop = Math.max(8, Math.min(pH - hH - 8, startTop + dy));
+
+            pineTableHud.style.left = newLeft + 'px';
+            pineTableHud.style.top = newTop + 'px';
+          }}
+
+          function onMouseUp() {{
+            isDragging = false;
+            pineTableHud.classList.remove('is-dragging');
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+          }}
+
+          document.addEventListener('mousemove', onMouseMove);
+          document.addEventListener('mouseup', onMouseUp);
+        }});
+
+        // Touch drag support
+        pineHudHeader.addEventListener('touchstart', (e) => {{
+          if (e.target.closest('#hudToggleBtn')) return;
+          const touch = e.touches[0];
+          isDragging = true;
+          pineTableHud.classList.add('is-dragging');
+
+          const rect = pineTableHud.getBoundingClientRect();
+          const parent = pineTableHud.offsetParent || document.body;
+          const parentRect = parent.getBoundingClientRect();
+
+          startX = touch.clientX;
+          startY = touch.clientY;
+          startLeft = rect.left - parentRect.left;
+          startTop = rect.top - parentRect.top;
+
+          pineTableHud.style.right = 'auto';
+          pineTableHud.style.left = startLeft + 'px';
+          pineTableHud.style.top = startTop + 'px';
+
+          function onTouchMove(te) {{
+            if (!isDragging) return;
+            const t = te.touches[0];
+            const dx = t.clientX - startX;
+            const dy = t.clientY - startY;
+
+            const pW = parent.clientWidth || window.innerWidth;
+            const pH = parent.clientHeight || window.innerHeight;
+            const hW = pineTableHud.offsetWidth;
+            const hH = pineTableHud.offsetHeight;
+
+            const newLeft = Math.max(8, Math.min(pW - hW - 8, startLeft + dx));
+            const newTop = Math.max(8, Math.min(pH - hH - 8, startTop + dy));
+
+            pineTableHud.style.left = newLeft + 'px';
+            pineTableHud.style.top = newTop + 'px';
+          }}
+
+          function onTouchEnd() {{
+            isDragging = false;
+            pineTableHud.classList.remove('is-dragging');
+            document.removeEventListener('touchmove', onTouchMove);
+            document.removeEventListener('touchend', onTouchEnd);
+          }}
+
+          document.addEventListener('touchmove', onTouchMove, {{ passive: false }});
+          document.addEventListener('touchend', onTouchEnd);
+        }}, {{ passive: true }});
+      }}
 
       let lastCandles = [];
 
