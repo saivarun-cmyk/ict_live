@@ -55,29 +55,44 @@ notifier = TelegramNotifier()
 # Set of already notified signal signatures: {symbol_time_signal_price}
 notified_signals = set()
 
-def dispatch_alerts_for_result(instrument_name: str, result: Dict[str, Any], latest_timestamp: int):
+def dispatch_alerts_for_result(instrument_name: str, result: Dict[str, Any], latest_timestamp: int, timeframe: str = "15m"):
+    # Enforce: Alerts ONLY on confirmed 15m candle (ignore 1m and 5m completely)
+    if timeframe not in ["15m", "15minute"]:
+        return
     if not notifier.is_enabled() or not result:
         return
+
+    import time
+    now_sec = int(time.time())
+
     # 1. Regular ICT Signals
     for s in result.get("signals", []):
         sig_time = s.get("time", 0)
-        # Only notify signals that are current or recent
-        if abs(latest_timestamp - sig_time) <= 1800:
-            sig_id = f"{instrument_name}_{sig_time}_{s.get('signal')}_{s.get('entry_price')}"
+        # 15m candle confirmed: bar closed or >= 900s elapsed
+        is_confirmed = (sig_time < latest_timestamp) or (now_sec >= sig_time + 900)
+        if not is_confirmed:
+            continue
+
+        if abs(latest_timestamp - sig_time) <= 2700:
+            sig_id = f"{instrument_name}_15m_{sig_time}_{s.get('signal')}_{s.get('entry_price')}"
             if sig_id not in notified_signals:
                 notified_signals.add(sig_id)
-                notifier.notify_signal(instrument_name, s)
-                logger.info(f"Dispatched Telegram alert for {instrument_name} {s.get('signal')}")
+                notifier.notify_signal(f"{instrument_name} [15m Confirmed]", s)
+                logger.info(f"Dispatched Telegram alert for {instrument_name} 15m Confirmed {s.get('signal')}")
 
     # 2. Silver Bullet Events
     for ev in result.get("silver_bullet_events", []):
         ev_time = ev.get("time", 0)
-        if abs(latest_timestamp - ev_time) <= 1800:
-            ev_id = f"{instrument_name}_{ev_time}_{ev.get('type')}_{ev.get('price')}"
+        is_confirmed = (ev_time < latest_timestamp) or (now_sec >= ev_time + 900)
+        if not is_confirmed:
+            continue
+
+        if abs(latest_timestamp - ev_time) <= 2700:
+            ev_id = f"{instrument_name}_15m_{ev_time}_{ev.get('type')}_{ev.get('price')}"
             if ev_id not in notified_signals:
                 notified_signals.add(ev_id)
-                notifier.notify_silver_bullet(instrument_name, ev)
-                logger.info(f"Dispatched Telegram Silver Bullet alert for {instrument_name} {ev.get('type')}")
+                notifier.notify_silver_bullet(f"{instrument_name} [15m Confirmed]", ev)
+                logger.info(f"Dispatched Telegram Silver Bullet alert for {instrument_name} 15m Confirmed {ev.get('type')}")
 
 @app.get("/api/test-telegram")
 async def test_telegram():
@@ -156,7 +171,7 @@ async def get_chart_data(
     # Dispatch Telegram notifications if fresh predictive signals detected
     inst_name = instrument_key.split("|")[-1] if "|" in instrument_key else instrument_key
     latest_ts = formatted_candles[-1]["time"] if formatted_candles else 0
-    dispatch_alerts_for_result(inst_name, result, latest_ts)
+    dispatch_alerts_for_result(inst_name, result, latest_ts, timeframe=timeframe)
 
     return {
         "instrument_key": instrument_key,

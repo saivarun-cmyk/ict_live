@@ -90,10 +90,10 @@ class UpstoxClient:
                         ))
                 raw_candles.sort(key=lambda x: x.timestamp)
                 from .candle_builder import aggregate_candles
-                if "5minute" in interval:
-                    return aggregate_candles(raw_candles, target_minutes=5)
-                elif "15minute" in interval:
+                if "15minute" in interval or interval == "15m":
                     return aggregate_candles(raw_candles, target_minutes=15)
+                elif "5minute" in interval or interval == "5m":
+                    return aggregate_candles(raw_candles, target_minutes=5)
                 return raw_candles
 
         # Generate realistic IST market session candles

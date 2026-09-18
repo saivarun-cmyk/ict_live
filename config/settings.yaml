@@ -68,6 +68,8 @@ ipda:
 
 telegram:
   enabled: true
+  timeframe_only: "15m"
+  require_candle_close: true
   events:
     - BUY_SIGNAL
     - SELL_SIGNAL

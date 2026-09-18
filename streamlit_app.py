@@ -125,23 +125,40 @@ if "notified_signals" not in st.session_state:
     st.session_state["notified_signals"] = set()
 
 def dispatch_alerts_for_result(instrument_name: str, tf_label: str, result: dict, latest_timestamp: int):
+    # Requirement: Telegram alerts ONLY on confirmed 15m candle (ignore 1m and 5m completely)
+    if tf_label != "15m":
+        return
     if not notifier.is_enabled() or not result:
         return
+
+    import time
+    now_sec = int(time.time())
+
     for s in result.get("signals", []):
         sig_time = s.get("time", 0)
-        if abs(latest_timestamp - sig_time) <= 1800:
-            sig_id = f"{instrument_name}_{tf_label}_{sig_time}_{s.get('signal')}_{s.get('entry_price')}"
+        # A 15m candle is confirmed when the candle has closed (bar closed or >= 900s elapsed)
+        is_confirmed = (sig_time < latest_timestamp) or (now_sec >= sig_time + 900)
+        if not is_confirmed:
+            continue
+
+        # Look back within last 45m (3 completed 15m bars) so we notify current confirmed setups
+        if abs(latest_timestamp - sig_time) <= 2700:
+            sig_id = f"{instrument_name}_15m_{sig_time}_{s.get('signal')}_{s.get('entry_price')}"
             if sig_id not in st.session_state["notified_signals"]:
                 st.session_state["notified_signals"].add(sig_id)
-                notifier.notify_signal(f"{instrument_name} ({tf_label})", s)
+                notifier.notify_signal(f"{instrument_name} [15m Confirmed]", s)
 
     for ev in result.get("silver_bullet_events", []):
         ev_time = ev.get("time", 0)
-        if abs(latest_timestamp - ev_time) <= 1800:
-            ev_id = f"{instrument_name}_{tf_label}_{ev_time}_{ev.get('type')}_{ev.get('price')}"
+        is_confirmed = (ev_time < latest_timestamp) or (now_sec >= ev_time + 900)
+        if not is_confirmed:
+            continue
+
+        if abs(latest_timestamp - ev_time) <= 2700:
+            ev_id = f"{instrument_name}_15m_{ev_time}_{ev.get('type')}_{ev.get('price')}"
             if ev_id not in st.session_state["notified_signals"]:
                 st.session_state["notified_signals"].add(ev_id)
-                notifier.notify_silver_bullet(f"{instrument_name} ({tf_label})", ev)
+                notifier.notify_silver_bullet(f"{instrument_name} [15m Confirmed]", ev)
 
 # Preload data for all 3 indices across 1m, 5m, and 15m timeframes
 indices = instruments_cfg.get("indices", [])
