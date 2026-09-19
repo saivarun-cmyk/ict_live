@@ -182,6 +182,32 @@ class TelegramNotifier:
         )
         self.send_message(msg)
 
+    def notify_trailing_sl_moved(
+        self,
+        symbol: str,
+        trade: Dict[str, Any],
+        new_sl: float,
+        locked_r: float,
+        peak_price: float,
+        locked_pnl: float
+    ):
+        """Notifies when the trailing ratchet steps forward, locking in higher profit."""
+        direction = trade.get("direction", "BUY")
+        entry = trade.get("spot_entry", 0.0)
+        model = trade.get("model", "ICT Setup")
+
+        msg = (
+            f"<b>🔒 {symbol} | TRAILING STOP ADVANCED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Setup:</b> {model} ({direction})\n"
+            f"<b>Peak Price Reached:</b> <code>{peak_price:.2f}</code>\n"
+            f"<b>New Trailed SL:</b> <code>{new_sl:.2f}</code> (+{locked_r:.1f}R locked)\n"
+            f"<b>Guaranteed Profit:</b> <b>+₹{locked_pnl:,.0f}</b> 💰\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Human ICT Desk: Ratchet mechanism advanced. Profits permanently banked.</i>"
+        )
+        self.send_message(msg)
+
     def notify_near_tp_lock(
         self,
         symbol: str,
@@ -226,6 +252,9 @@ class TelegramNotifier:
         if reason == "BREAKEVEN_HIT":
             icon = "⚪"
             verdict = "BREAKEVEN SCRATCH (₹0 LOSS) 🛡️"
+        elif reason == "TRAILING_SL_HIT":
+            icon = "🔒"
+            verdict = f"TRAILING STOP PROFIT SECURED 💰 (+₹{pnl_inr:,.0f})"
         elif reason == "TP_HIT":
             icon = "🟢"
             verdict = f"FULL TAKE PROFIT HIT 🎯 (+₹{pnl_inr:,.0f})"

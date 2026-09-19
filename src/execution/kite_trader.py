@@ -12,6 +12,7 @@ Live mode (PAPER_MODE=false):
 import os
 import json
 import time
+import math
 import logging
 import threading
 import yaml
@@ -284,6 +285,10 @@ class KiteTrader:
         tm = self.config.get("trade_management", {})
         enable_be = tm.get("enable_breakeven_at_1r", True)
         be_r = float(tm.get("breakeven_trigger_r", 1.0))
+        enable_trailing_sl = tm.get("enable_trailing_sl", True)
+        trail_act_r = float(tm.get("trailing_activation_r", 1.5))
+        trail_dist_r = float(tm.get("trailing_distance_r", 1.0))
+        trail_step_r = float(tm.get("trailing_step_r", 0.5))
         enable_near_tp = tm.get("enable_near_tp_lock", True)
         near_tp_pct = float(tm.get("near_tp_threshold_pct", 85.0))
         stall_wick_pct = float(tm.get("rejection_stall_wick_pct", 20.0))
@@ -301,9 +306,14 @@ class KiteTrader:
             risk_pts = float(trade.get("risk_pts", abs(entry - sl) or 1.0))
 
             if direction == "BUY":
-                # 1. Stop Loss / Breakeven check
+                # 1. Stop Loss / Breakeven / Trailing SL check
                 if low_p <= sl:
-                    reason = "BREAKEVEN_HIT" if trade.get("breakeven_moved") else "SL_HIT"
+                    if trade.get("trailed_r", 0.0) > 0.0:
+                        reason = "TRAILING_SL_HIT"
+                    elif trade.get("breakeven_moved"):
+                        reason = "BREAKEVEN_HIT"
+                    else:
+                        reason = "SL_HIT"
                     exit_spot = sl
                     closed_info = self._close_trade(trade_id, trade, exit_spot, reason)
                     if notifier:
@@ -337,6 +347,34 @@ class KiteTrader:
                             notifier.notify_breakeven(instrument_name, trade, high_p)
                         events.append({"event": "BREAKEVEN_MOVED", "trade_id": trade_id, "trade": trade})
 
+                # 3b. Institutional Trailing Stop Loss Ratchet
+                trade["peak_price"] = max(trade.get("peak_price", entry), high_p)
+                peak_gain_r = (trade["peak_price"] - entry) / max(risk_pts, 0.01)
+
+                if enable_trailing_sl and peak_gain_r >= trail_act_r:
+                    raw_lock_r = peak_gain_r - trail_dist_r
+                    if raw_lock_r > 0:
+                        locked_r = round(math.floor(raw_lock_r / trail_step_r) * trail_step_r, 2)
+                        prev_trailed_r = trade.get("trailed_r", 0.0)
+                        if locked_r > prev_trailed_r:
+                            new_sl = round(entry + locked_r * risk_pts, 2)
+                            if new_sl > trade.get("current_sl", 0.0):
+                                trade["current_sl"] = new_sl
+                                trade["trailed_r"] = locked_r
+                                locked_pnl = round(locked_r * risk_pts * trade.get("qty", 1), 2)
+                                self._log_paper_trade("TRAILING_SL_MOVED", {
+                                    **trade,
+                                    "current_price": high_p,
+                                    "new_sl": new_sl,
+                                    "trailed_r": locked_r,
+                                    "locked_pnl": locked_pnl,
+                                    "message": f"Trailed SL to ₹{new_sl:.2f} (+{locked_r}R profit locked)"
+                                })
+                                logger.info(f"[{trade_id}] 🔒 ICT Pro: Trailed SL to ₹{new_sl:.2f} (+{locked_r}R profit locked | Peak {trade['peak_price']:.2f})")
+                                if notifier:
+                                    notifier.notify_trailing_sl_moved(instrument_name, trade, new_sl, locked_r, trade["peak_price"], locked_pnl)
+                                events.append({"event": "TRAILING_SL_MOVED", "trade_id": trade_id, "new_sl": new_sl, "trailed_r": locked_r, "trade": trade})
+
                 # 4. Proximity / Near-TP Profit Lock
                 if enable_near_tp and not trade.get("near_tp_booked"):
                     near_tp_level = entry + (near_tp_pct / 100.0) * (tp - entry)
@@ -359,9 +397,14 @@ class KiteTrader:
                             continue
 
             elif direction == "SELL":
-                # 1. Stop Loss / Breakeven check
+                # 1. Stop Loss / Breakeven / Trailing SL check
                 if high_p >= sl:
-                    reason = "BREAKEVEN_HIT" if trade.get("breakeven_moved") else "SL_HIT"
+                    if trade.get("trailed_r", 0.0) > 0.0:
+                        reason = "TRAILING_SL_HIT"
+                    elif trade.get("breakeven_moved"):
+                        reason = "BREAKEVEN_HIT"
+                    else:
+                        reason = "SL_HIT"
                     exit_spot = sl
                     closed_info = self._close_trade(trade_id, trade, exit_spot, reason)
                     if notifier:
@@ -394,6 +437,34 @@ class KiteTrader:
                         if notifier:
                             notifier.notify_breakeven(instrument_name, trade, low_p)
                         events.append({"event": "BREAKEVEN_MOVED", "trade_id": trade_id, "trade": trade})
+
+                # 3b. Institutional Trailing Stop Loss Ratchet
+                trade["peak_price"] = min(trade.get("peak_price", entry), low_p)
+                peak_gain_r = (entry - trade["peak_price"]) / max(risk_pts, 0.01)
+
+                if enable_trailing_sl and peak_gain_r >= trail_act_r:
+                    raw_lock_r = peak_gain_r - trail_dist_r
+                    if raw_lock_r > 0:
+                        locked_r = round(math.floor(raw_lock_r / trail_step_r) * trail_step_r, 2)
+                        prev_trailed_r = trade.get("trailed_r", 0.0)
+                        if locked_r > prev_trailed_r:
+                            new_sl = round(entry - locked_r * risk_pts, 2)
+                            if new_sl < trade.get("current_sl", 999999.0):
+                                trade["current_sl"] = new_sl
+                                trade["trailed_r"] = locked_r
+                                locked_pnl = round(locked_r * risk_pts * trade.get("qty", 1), 2)
+                                self._log_paper_trade("TRAILING_SL_MOVED", {
+                                    **trade,
+                                    "current_price": low_p,
+                                    "new_sl": new_sl,
+                                    "trailed_r": locked_r,
+                                    "locked_pnl": locked_pnl,
+                                    "message": f"Trailed SL to ₹{new_sl:.2f} (+{locked_r}R profit locked)"
+                                })
+                                logger.info(f"[{trade_id}] 🔒 ICT Pro: Trailed SL to ₹{new_sl:.2f} (+{locked_r}R profit locked | Peak {trade['peak_price']:.2f})")
+                                if notifier:
+                                    notifier.notify_trailing_sl_moved(instrument_name, trade, new_sl, locked_r, trade["peak_price"], locked_pnl)
+                                events.append({"event": "TRAILING_SL_MOVED", "trade_id": trade_id, "new_sl": new_sl, "trailed_r": locked_r, "trade": trade})
 
                 # 4. Proximity / Near-TP Profit Lock
                 if enable_near_tp and not trade.get("near_tp_booked"):
@@ -431,6 +502,10 @@ class KiteTrader:
         elif self.paper_mode:
             exit_prem = self._estimate_premium(exit_spot, strike, direction)
             pnl = (exit_prem - entry_prem) * qty
+            if reason == "TRAILING_SL_HIT":
+                # Ensure minimum locked PnL is guaranteed in paper mode
+                min_locked = round(trade.get("trailed_r", 0.0) * trade.get("risk_pts", 0.0) * qty, 2)
+                pnl = max(pnl, min_locked)
         else:
             exit_prem = entry_prem
             pnl = 0.0

@@ -94,6 +94,10 @@ trade_management:
   mode: "ict_pro"                     # Options: "ict_pro" (human desk trader) or "mechanical" (rigid TP/SL)
   enable_breakeven_at_1r: true        # Move SL to Breakeven at +1.0R (eliminate open risk)
   breakeven_trigger_r: 1.0            # R-multiple expansion to trigger BE move (e.g. 1.0)
+  enable_trailing_sl: true            # Institutional Trailing Stop Loss (R-multiple ratchet)
+  trailing_activation_r: 1.5          # Minimum R-multiple gain required before trailing begins beyond BE
+  trailing_distance_r: 1.0            # Breathing room buffer kept behind peak price (prevents getting shaken out on FVG pullbacks)
+  trailing_step_r: 0.5                # Trailing ratchet increment step in R-multiples (e.g. 0.5R)
   enable_near_tp_lock: true           # Harvest profits if price reaches near TP and stalls/rejects
   near_tp_threshold_pct: 85.0         # Proximity threshold % of target distance (85-90%)
   rejection_stall_wick_pct: 20.0      # Rejection wick % indicating target absorption / stall
@@ -132,8 +136,10 @@ telegram:
     - SILVER_BULLET_SELL
     - TP_HIT
     - SL_HIT
+    - TRAILING_SL_HIT
     - TIME_BOXED_EXIT
     - BREAKEVEN_MOVE
+    - TRAILING_SL_MOVED
     - NEAR_TP_LOCK
     - PYRAMID_ENTRY
 

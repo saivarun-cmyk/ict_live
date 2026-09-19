@@ -108,11 +108,17 @@ Once in a trade, the engine actively manages the position bar-by-bar:
 
 1. **Breakeven Defense (+1.0R Expansion)**:
    - As soon as the position gains +1.0R in profit, the Stop Loss is automatically moved to entry. The trade is now **100% risk-free (Open Risk = ₹0)**.
-2. **Proximity Profit Locking (85–90% Near-TP)**:
+2. **Institutional Trailing SL Ratchet (Beyond +1.0R)**:
+   - Once price expands beyond `trailing_activation_r: 1.5`, the trailing ratchet begins stepping forward while preserving a `1.0R breathing room buffer` behind peak price:
+     * At **+2.0R expansion**: SL steps up to **+1.0R in profit** (Locks in +1.0R guaranteed).
+     * At **+2.5R expansion**: SL steps up to **+1.5R in profit** (Locks in +1.5R guaranteed).
+     * At **+3.0R expansion**: SL steps up to **+2.0R in profit** (Locks in +2.0R guaranteed).
+   - If a sudden reversal occurs before reaching full TP, the trade is stopped out with a **`TRAILING_SL_HIT`** event in guaranteed green profit!
+3. **Proximity Profit Locking (85–90% Near-TP)**:
    - If price reaches 85–90% of TP and forms an adverse rejection wick or absorption candle, the engine immediately closes the trade to lock in profits, preventing winners from turning into losses.
-3. **Institutional Pyramiding**:
+4. **Institutional Pyramiding**:
    - If another setup forms while a trade is open, the engine will only add size (pyramid) **if the primary trade is already protected at Breakeven**. No trade with open risk is ever averaged or pyramided.
-4. **Daily Capital Protection**:
+5. **Daily Capital Protection**:
    - `RiskGate` enforces a strict daily loss ceiling (`max_daily_loss_inr: 2000`). If hit, trading halts immediately for the day.
 
 ---

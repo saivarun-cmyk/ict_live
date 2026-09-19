@@ -26,6 +26,7 @@ def test_trade_manager():
     # 1. Initialize executor with test config
     with open(os.path.join(BASE_DIR, "config", "settings.yaml")) as f:
         cfg = yaml.safe_load(f)
+    cfg["trade_management"]["enable_trailing_sl"] = False
 
     # Force paper mode for safe testing
     os.environ["PAPER_MODE"] = "true"
