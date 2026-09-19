@@ -41,6 +41,7 @@ ENV/
 
 # Logs & temp files
 *.log
+logs/*.json
 scratch/
 screenshot*.png
 .streamlit/secrets.toml

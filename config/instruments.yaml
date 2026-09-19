@@ -34,7 +34,7 @@ stocks:
     instrument_key: "NSE_EQ|INE002A01018"
     exchange: "NSE_EQ"
     tick_size: 0.05
-    enabled: true
+    enabled: false
 
   - id: "hdfc_bank"
     name: "HDFC Bank"
@@ -42,7 +42,7 @@ stocks:
     instrument_key: "NSE_EQ|INE040A01034"
     exchange: "NSE_EQ"
     tick_size: 0.05
-    enabled: true
+    enabled: false
 
   - id: "tcs"
     name: "Tata Consultancy Services"

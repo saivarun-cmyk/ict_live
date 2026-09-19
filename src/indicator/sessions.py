@@ -1,5 +1,6 @@
 """Killzone time window checks (IST timezone)."""
 from datetime import datetime, time
+from typing import Tuple
 import zoneinfo
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")

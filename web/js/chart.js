@@ -130,6 +130,14 @@ class ICTPrimitive {
         } else if (fvg.excluded_fake) {
           ctx.fillStyle = 'rgba(120, 123, 134, 0.08)';
           ctx.strokeStyle = 'rgba(120, 123, 134, 0.3)';
+        } else if (fvg.is_inverse) {
+          if (fvg.is_bullish) {
+            ctx.fillStyle = 'rgba(0, 188, 212, 0.22)';
+            ctx.strokeStyle = 'rgba(0, 188, 212, 0.85)';
+          } else {
+            ctx.fillStyle = 'rgba(255, 112, 67, 0.22)';
+            ctx.strokeStyle = 'rgba(255, 112, 67, 0.85)';
+          }
         } else if (fvg.is_bullish) {
           ctx.fillStyle = 'rgba(8, 153, 129, 0.18)';
           ctx.strokeStyle = 'rgba(8, 153, 129, 0.8)';
@@ -145,7 +153,9 @@ class ICTPrimitive {
         // 50% Consequent Encroachment (CE) Dotted Midpoint Line
         const yCE = (yTop + yBot) / 2;
         ctx.setLineDash([3, 3]);
-        ctx.strokeStyle = fvg.is_bullish ? 'rgba(8, 153, 129, 0.6)' : 'rgba(242, 54, 69, 0.6)';
+        ctx.strokeStyle = fvg.is_inverse 
+          ? (fvg.is_bullish ? 'rgba(0, 188, 212, 0.7)' : 'rgba(255, 112, 67, 0.7)')
+          : (fvg.is_bullish ? 'rgba(8, 153, 129, 0.6)' : 'rgba(242, 54, 69, 0.6)');
         ctx.beginPath();
         ctx.moveTo(boxX, yCE);
         ctx.lineTo(boxX + boxW, yCE);
@@ -154,8 +164,9 @@ class ICTPrimitive {
         // Label inside box
         ctx.setLineDash([]);
         ctx.font = 'bold 9px -apple-system, sans-serif';
-        ctx.fillStyle = fvg.mitigated || fvg.excluded_fake ? '#787b86' : (fvg.is_bullish ? '#26a69a' : '#ef5350');
-        const tag = fvg.mitigated ? 'Mitigated FVG' : fvg.excluded_fake ? 'Fake FVG' : (fvg.is_bullish ? 'Bullish FVG' : 'Bearish FVG') + ' (' + fvg.tier + ')';
+        const fvgType = fvg.is_inverse ? 'IFVG' : 'FVG';
+        ctx.fillStyle = fvg.mitigated || fvg.excluded_fake ? '#787b86' : (fvg.is_inverse ? (fvg.is_bullish ? '#00bcd4' : '#ff7043') : (fvg.is_bullish ? '#26a69a' : '#ef5350'));
+        const tag = fvg.mitigated ? `Mitigated ${fvgType}` : fvg.excluded_fake ? 'Fake FVG' : `${fvg.is_bullish ? 'Bullish' : 'Bearish'} ${fvgType} (${fvg.tier})`;
         ctx.fillText(tag, boxX + 6, boxY + Math.min(boxH - 3, 11));
 
         // Highlight the 3 forming candles with dashed yellow box (Pine Script feature)
@@ -275,14 +286,22 @@ class ICTPrimitive {
         ctx.fillStyle = isBuy ? '#089981' : '#f23645';
         const tagY = isBuy ? yEntry + 32 : yEntry - 32;
 
+        const grade = s.grade || '';
+        const score = s.confluence_score || 0;
+        const scoreStr = score > 0 ? ` (${grade} ${score})` : '';
+        const labelText = s.signal + ' [' + s.model + ']' + scoreStr;
+
+        ctx.font = 'bold 9px -apple-system, sans-serif';
+        const textWidth = ctx.measureText(labelText).width;
+        const pillWidth = Math.max(96, textWidth + 16);
+
         ctx.beginPath();
-        ctx.roundRect(x - 48, tagY - 10, 96, 20, 4);
+        ctx.roundRect(x - pillWidth / 2, tagY - 10, pillWidth, 20, 4);
         ctx.fill();
 
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 9px -apple-system, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(s.signal + ' [' + s.model + ']', x, tagY + 3);
+        ctx.fillText(labelText, x, tagY + 3);
 
         // SL Line (Dotted Red)
         if (ySL !== null) {
@@ -352,6 +371,51 @@ class ICTPrimitive {
           ctx.textAlign = 'center';
           ctx.fillText('🥈 Killzone Ended ⏱️', x, y - 8);
         }
+        ctx.restore();
+      }
+    }
+
+    // =========================================================================
+    // 6. JUDAS SWING & TURTLE SOUP EVENT BADGES
+    // =========================================================================
+    if (opts.showSignals && ind.judas_swing_events) {
+      for (const ev of ind.judas_swing_events) {
+        const x = barToX(ev.bar_index);
+        const y = priceToY(ev.entry_price);
+        if (x === null || y === null) continue;
+
+        ctx.save();
+        const isBuy = ev.type.includes('BUY');
+        ctx.fillStyle = isBuy ? '#10b981' : '#ef4444';
+        ctx.beginPath();
+        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = isBuy ? '#34d399' : '#f87171';
+        ctx.font = 'bold 9px -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`🪤 Judas ${isBuy ? 'BUY' : 'SELL'} (${ev.grade || 'A'})`, x, isBuy ? y + 15 : y - 12);
+        ctx.restore();
+      }
+    }
+
+    if (opts.showSignals && ind.turtle_soup_events) {
+      for (const ev of ind.turtle_soup_events) {
+        const x = barToX(ev.bar_index);
+        const y = priceToY(ev.entry_price);
+        if (x === null || y === null) continue;
+
+        ctx.save();
+        const isBuy = ev.type.includes('BUY');
+        ctx.fillStyle = isBuy ? '#10b981' : '#f59e0b';
+        ctx.beginPath();
+        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = isBuy ? '#34d399' : '#fbbf24';
+        ctx.font = 'bold 9px -apple-system, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`🐢 Turtle Soup (${ev.grade || 'A'})`, x, isBuy ? y + 15 : y - 12);
         ctx.restore();
       }
     }
@@ -567,6 +631,28 @@ class ICTChart {
         });
         this.priceLines.push(pdlLine);
       }
+      if (this.indicators.pwh) {
+        const pwhLine = this.candleSeries.createPriceLine({
+          price: this.indicators.pwh,
+          color: 'rgba(236, 72, 153, 0.9)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'PWH'
+        });
+        this.priceLines.push(pwhLine);
+      }
+      if (this.indicators.pwl) {
+        const pwlLine = this.candleSeries.createPriceLine({
+          price: this.indicators.pwl,
+          color: 'rgba(236, 72, 153, 0.9)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'PWL'
+        });
+        this.priceLines.push(pwlLine);
+      }
     }
 
     // 7. Repaint primitives with matching data and price scale
@@ -647,6 +733,28 @@ class ICTChart {
           title: 'PDL'
         });
         this.priceLines.push(pdlLine);
+      }
+      if (indicators.pwh) {
+        const pwhLine = this.candleSeries.createPriceLine({
+          price: indicators.pwh,
+          color: 'rgba(236, 72, 153, 0.9)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'PWH'
+        });
+        this.priceLines.push(pwhLine);
+      }
+      if (indicators.pwl) {
+        const pwlLine = this.candleSeries.createPriceLine({
+          price: indicators.pwl,
+          color: 'rgba(236, 72, 153, 0.9)',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: 'PWL'
+        });
+        this.priceLines.push(pwlLine);
       }
     }
 

@@ -43,7 +43,7 @@ class TelegramNotifier:
             return False
 
     def notify_signal(self, symbol: str, signal_data: Dict[str, Any]):
-        """Formats and dispatches BUY/SELL alerts matching Pine Script format."""
+        """Formats and dispatches BUY/SELL alerts matching Pine Script format with Institutional Agent Brain grading."""
         sig = signal_data.get("signal", "HOLD")
         icon = "🟢" if sig == "BUY" else "🔴"
         model = signal_data.get("model", "2022 Model")
@@ -54,16 +54,72 @@ class TelegramNotifier:
         exit_plan = signal_data.get("exit_plan", "")
         cisd = signal_data.get("cisd", "NEUTRAL")
 
+        grade = signal_data.get("grade", "A")
+        score = signal_data.get("confluence_score", 0)
+        factors = signal_data.get("confluence_factors", [])
+        factors_str = "\n • " + "\n • ".join(factors) if factors else "Standard Confluence"
+        grade_badge = "⭐️ A+" if grade == "A+" else ("🌟 A" if grade == "A" else f"⚡️ {grade}")
+
         msg = (
             f"<b>{icon} {symbol} | ICT Predictive {sig}</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Grade:</b> {grade_badge} (Score: <b>{score}/100</b>)\n"
             f"<b>Model:</b> {model} [{tier}]\n"
             f"<b>CISD State:</b> {cisd}\n"
             f"<b>Entry:</b> <code>{entry:.2f}</code>\n"
             f"<b>Stop Loss:</b> <code>{sl:.2f}</code>\n"
             f"<b>Take Profit:</b> <code>{tp:.2f}</code> (2:1 R:R)\n"
             f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Institutional Confluences:</b>{factors_str}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
             f"<b>Exit Plan:</b> {exit_plan}"
+        )
+        self.send_message(msg)
+
+    def notify_judas_swing(self, symbol: str, event_data: Dict[str, Any]):
+        """Judas Swing Opening Range Trap specific notification."""
+        ev_type = event_data.get("type", "")
+        direction = "BUY (Long Reversal)" if "BUY" in ev_type else "SELL (Short Reversal)"
+        icon = "🟢" if "BUY" in ev_type else "🔴"
+        price = event_data.get("entry_price", 0.0)
+        sl = event_data.get("sl", 0.0)
+        tp = event_data.get("tp", 0.0)
+        score = event_data.get("score", 0)
+        grade = event_data.get("grade", "A")
+
+        msg = (
+            f"<b>🪤 {symbol} | JUDAS SWING DETECTED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Direction:</b> {icon} {direction}\n"
+            f"<b>Trap:</b> Opening Range Liquidity Trapped\n"
+            f"<b>Grade:</b> ⭐️ {grade} (Score: <b>{score}/100</b>)\n"
+            f"<b>Entry:</b> <code>{price:.2f}</code> | <b>SL:</b> <code>{sl:.2f}</code> | <b>TP:</b> <code>{tp:.2f}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Institutional rule: Retail breakout orders absorbed. Reversing to opposite liquidity!</i>"
+        )
+        self.send_message(msg)
+
+    def notify_turtle_soup(self, symbol: str, event_data: Dict[str, Any]):
+        """Turtle Soup False Breakout notification."""
+        ev_type = event_data.get("type", "")
+        direction = "BUY (Long Reversal)" if "BUY" in ev_type else "SELL (Short Reversal)"
+        icon = "🟢" if "BUY" in ev_type else "🔴"
+        price = event_data.get("entry_price", 0.0)
+        level = event_data.get("level", 0.0)
+        sl = event_data.get("sl", 0.0)
+        tp = event_data.get("tp", 0.0)
+        score = event_data.get("score", 0)
+        grade = event_data.get("grade", "A")
+
+        msg = (
+            f"<b>🐢 {symbol} | TURTLE SOUP REVERSAL</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Direction:</b> {icon} {direction}\n"
+            f"<b>Swept Level:</b> <code>{level:.2f}</code> (False Breakout Rejected)\n"
+            f"<b>Grade:</b> ⭐️ {grade} (Score: <b>{score}/100</b>)\n"
+            f"<b>Entry:</b> <code>{price:.2f}</code> | <b>SL:</b> <code>{sl:.2f}</code> | <b>TP:</b> <code>{tp:.2f}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Institutional rule: Smart money raided HTF liquidity, rejecting back inside.</i>"
         )
         self.send_message(msg)
 
@@ -102,3 +158,113 @@ class TelegramNotifier:
             msg = f"<b>🥈 {symbol} | SILVER BULLET Event:</b> {ev_type} at {price:.2f}"
 
         self.send_message(msg)
+
+    def _send(self, text: str) -> bool:
+        """Compatibility alias for send_message."""
+        return self.send_message(text)
+
+    def notify_breakeven(self, symbol: str, trade: Dict[str, Any], current_price: float):
+        """Notifies when a trade achieves +1R expansion and SL is moved to Breakeven."""
+        direction = trade.get("direction", "BUY")
+        entry = trade.get("spot_entry", 0.0)
+        model = trade.get("model", "ICT Setup")
+        risk_pts = trade.get("risk_pts", 0.0)
+
+        msg = (
+            f"<b>🛡️ {symbol} | RISK-FREE DEFENSE ACTIVATED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Setup:</b> {model} ({direction})\n"
+            f"<b>Expansion:</b> +1.0R reached at <code>{current_price:.2f}</code>\n"
+            f"<b>Desk Action:</b> Stop Loss moved to Breakeven (<code>{entry:.2f}</code>)\n"
+            f"<b>Open Risk:</b> <b>₹0.00 (Risk-Free Trade)</b> 🔒\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Institutional rule: Capital protected. Runners targeting TP.</i>"
+        )
+        self.send_message(msg)
+
+    def notify_near_tp_lock(
+        self,
+        symbol: str,
+        trade: Dict[str, Any],
+        exit_price: float,
+        pnl_pts: float,
+        pnl_inr: float,
+        pct_reached: float
+    ):
+        """Notifies when a trade approaches TP (e.g. 85-90%) and locks in profit on stall."""
+        direction = trade.get("direction", "BUY")
+        model = trade.get("model", "ICT Setup")
+        entry = trade.get("spot_entry", 0.0)
+        tp = trade.get("spot_tp", 0.0)
+
+        msg = (
+            f"<b>🎯 {symbol} | PROXIMITY PROFIT HARVEST</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Setup:</b> {model} ({direction})\n"
+            f"<b>Target Proximity:</b> {pct_reached:.1f}% of TP reached\n"
+            f"<b>Target TP:</b> <code>{tp:.2f}</code> | <b>Exited @</b> <code>{exit_price:.2f}</code>\n"
+            f"<b>Desk Action:</b> Liquidity absorption/stall detected. Profit booked.\n"
+            f"<b>Secured Gain:</b> +{pnl_pts:.1f} pts (+₹{pnl_inr:,.0f}) 💰\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Human ICT Desk: Protect the bag, never let 85%+ winners retrace.</i>"
+        )
+        self.send_message(msg)
+
+    def notify_trade_closed(
+        self,
+        symbol: str,
+        trade: Dict[str, Any],
+        reason: str,
+        exit_price: float,
+        pnl_inr: float
+    ):
+        """Notifies full trade resolution (TP, SL, Breakeven, or Time-boxed)."""
+        direction = trade.get("direction", "BUY")
+        model = trade.get("model", "ICT Setup")
+        entry = trade.get("spot_entry", 0.0)
+
+        if reason == "BREAKEVEN_HIT":
+            icon = "⚪"
+            verdict = "BREAKEVEN SCRATCH (₹0 LOSS) 🛡️"
+        elif reason == "TP_HIT":
+            icon = "🟢"
+            verdict = f"FULL TAKE PROFIT HIT 🎯 (+₹{pnl_inr:,.0f})"
+        elif reason == "SL_HIT":
+            icon = "🔴"
+            verdict = f"STOP LOSS HIT 🛑 (-₹{abs(pnl_inr):,.0f})"
+        else:
+            icon = "⏱️"
+            verdict = f"{reason} | P&L: ₹{pnl_inr:+,.0f}"
+
+        msg = (
+            f"<b>{icon} {symbol} | TRADE CLOSED: {verdict}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Setup:</b> {model} ({direction})\n"
+            f"<b>Entry:</b> <code>{entry:.2f}</code> ➔ <b>Exit:</b> <code>{exit_price:.2f}</code>\n"
+            f"<b>Reason:</b> {reason}\n"
+            f"<b>Realized P&L:</b> <b>₹{pnl_inr:+,.0f}</b>"
+        )
+        self.send_message(msg)
+
+    def notify_pyramid(
+        self,
+        symbol: str,
+        primary_trade: Dict[str, Any],
+        new_signal: Dict[str, Any]
+    ):
+        """Notifies when a secondary setup is added because the primary setup is risk-free."""
+        direction = new_signal.get("signal", "BUY")
+        new_model = new_signal.get("model", "Silver Bullet")
+        entry = new_signal.get("entry_price", 0.0)
+
+        msg = (
+            f"<b>⚡ {symbol} | INSTITUTIONAL PYRAMID EXECUTION</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Primary Setup:</b> {primary_trade.get('model')} (Protected at Breakeven)\n"
+            f"<b>Secondary Setup:</b> {new_model} ({direction}) @ <code>{entry:.2f}</code>\n"
+            f"<b>Desk Status:</b> Primary risk is ₹0. Stacking confluence position!\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Pro Desk: Adding size to high-conviction winning order flow.</i>"
+        )
+        self.send_message(msg)
+

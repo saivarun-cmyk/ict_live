@@ -23,7 +23,7 @@ st.set_page_config(
     page_title="ICT Predictive Signals Engine",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # Streamlit CSS: Remove default margins and headers to give 100% full-screen TradingView space
@@ -100,6 +100,135 @@ def load_config():
     return settings, instruments
 
 settings_cfg, instruments_cfg = load_config()
+
+# ── Live Settings Panel (Sidebar) ────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""
+    <style>
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0f1117 0%, #161b27 100%);
+        border-right: 1px solid #2a2f3d;
+    }
+    [data-testid="stSidebar"] .stMarkdown h2 { color: #e2c975; font-size: 15px; }
+    [data-testid="stSidebar"] .stMarkdown h3 { color: #a0aec0; font-size: 12px; letter-spacing: 0.08em; margin-top:14px; }
+    [data-testid="stSidebar"] label { color: #cbd5e0 !important; font-size: 13px !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown("## ⚙️ Engine Settings")
+    st.caption("Changes apply immediately on next data refresh")
+
+    # ── Killzone Section ──────────────────────────────────────────────────
+    st.markdown("### 🕐 KILLZONES")
+
+    kz_enabled = st.toggle(
+        "Enable Killzone Filter",
+        value=settings_cfg.get("killzones", {}).get("use_killzone", True),
+        key="kz_enabled",
+        help="When ON, signals only fire during defined time windows"
+    )
+    kz1_val = st.text_input(
+        "KZ1 Window (IST)",
+        value=settings_cfg.get("killzones", {}).get("killzone1", "09:20-10:30"),
+        key="kz1",
+        help="Morning session. Format: HH:MM-HH:MM"
+    )
+    kz2_val = st.text_input(
+        "KZ2 Window (IST)",
+        value=settings_cfg.get("killzones", {}).get("killzone2", "13:30-15:00"),
+        key="kz2",
+        help="Afternoon session. Format: HH:MM-HH:MM"
+    )
+    skip_open = st.toggle(
+        "Skip 09:15 Opening Bar",
+        value=settings_cfg.get("killzones", {}).get("skip_open_bar", True),
+        key="skip_open",
+        help="Blocks the first candle of the day (high spread, gap fills, fake wicks)"
+    )
+    strict_kz = st.toggle(
+        "Strict Killzone (No OOK signals)",
+        value=settings_cfg.get("killzones", {}).get("strict_killzone", True),
+        key="strict_kz",
+        help="When ON, signals outside killzone windows are completely suppressed"
+    )
+
+    st.divider()
+
+    # ── HTF Bias Section ──────────────────────────────────────────────────
+    st.markdown("### 📊 HTF BIAS FILTER")
+
+    htf_bias_on = st.toggle(
+        "Enable HTF Bias Filter",
+        value=settings_cfg.get("htf_bias", {}).get("use_htf_bias", False),
+        key="htf_bias_on",
+        help="Only take BUY signals when 30m trend is bullish, SELL when bearish"
+    )
+    htf_strict = st.toggle(
+        "Strict HTF Bias (block NEUTRAL)",
+        value=settings_cfg.get("htf_bias", {}).get("htf_bias_strict", False),
+        key="htf_strict",
+        help="When ON, also blocks signals when 30m trend is NEUTRAL (only clear trends)",
+        disabled=not htf_bias_on
+    )
+
+    st.divider()
+
+    # ── Risk Section ──────────────────────────────────────────────────────
+    st.markdown("### 💰 RISK & REWARD")
+
+    rr_val = st.slider(
+        "Risk : Reward Ratio",
+        min_value=1.0, max_value=5.0,
+        value=float(settings_cfg.get("risk", {}).get("risk_reward", 2.0)),
+        step=0.5,
+        key="rr_val",
+        help="Target = Entry ± (SL distance × R:R)"
+    )
+    fvg_tier = st.selectbox(
+        "Min FVG Quality Tier",
+        options=["Any", "Standard+", "Higher+", "Highest Only"],
+        index=["Any", "Standard+", "Higher+", "Highest Only"].index(
+            settings_cfg.get("fvg_quality", {}).get("min_fvg_tier", "Standard+")
+        ),
+        key="fvg_tier",
+        help="Filters out low-quality FVG setups"
+    )
+
+    st.divider()
+
+    # ── Traditional ICT Section ───────────────────────────────────────────
+    st.markdown("### 🏛️ TRADITIONAL ICT")
+    trad_ict_on = st.toggle(
+        "Strict Traditional ICT Mode",
+        value=bool(settings_cfg.get("traditional_ict", {}).get("enabled", settings_cfg.get("traditionalICT", True))),
+        key="trad_ict_on",
+        help="Enforces strict OB validation (sweep origin + displacement FVG), setup chaining, and confirmed candle rejection."
+    )
+    ifvg_enabled = st.toggle(
+        "⚡ Inverse FVGs (IFVG)",
+        value=bool(settings_cfg.get("traditional_ict", {}).get("use_ifvg", True)),
+        key="ifvg_enabled",
+        help="Enables institutional Inverse FVGs that flip polarity on displacement body close."
+    )
+
+    st.divider()
+    st.caption("📁 Settings also editable in `config/settings.yaml`")
+
+# ── Apply sidebar overrides to live config ────────────────────────────────────
+settings_cfg["killzones"]["use_killzone"]    = kz_enabled
+settings_cfg["killzones"]["killzone1"]       = kz1_val
+settings_cfg["killzones"]["killzone2"]       = kz2_val
+settings_cfg["killzones"]["skip_open_bar"]   = skip_open
+settings_cfg["killzones"]["strict_killzone"] = strict_kz
+settings_cfg["htf_bias"]["use_htf_bias"]     = htf_bias_on
+settings_cfg["htf_bias"]["htf_bias_strict"]  = htf_strict
+settings_cfg["risk"]["risk_reward"]           = rr_val
+settings_cfg["fvg_quality"]["min_fvg_tier"]  = fvg_tier
+if "traditional_ict" not in settings_cfg:
+    settings_cfg["traditional_ict"] = {}
+settings_cfg["traditional_ict"]["enabled"] = trad_ict_on
+settings_cfg["traditional_ict"]["use_ifvg"] = ifvg_enabled
+settings_cfg["traditionalICT"] = trad_ict_on
 
 engine = ICTPredictiveEngine(settings_cfg)
 data_client = UpstoxClient(access_token=token)

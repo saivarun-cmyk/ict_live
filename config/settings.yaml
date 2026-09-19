@@ -38,12 +38,24 @@ ote:
 
 killzones:
   use_killzone: true
-  killzone1: "09:15-10:30"   # IST
+  killzone1: "09:20-10:30"   # IST  (starts at 09:20 to skip the erratic opening bar)
   killzone2: "13:30-15:00"   # IST
+  skip_open_bar: true         # Skip the 09:15 candle (high spread, fake wicks, gap fills)
+  strict_killzone: true       # Suppress signals fired outside defined killzone windows
+
+# Multi-Timeframe Alignment (15m Macro Narrative + 5m Sniper Execution)
+multi_timeframe:
+  enabled: true                       # Enable 15m HTF narrative + 5m sniper entry alignment
+  narrative_tf: 15                    # Higher timeframe in minutes for macro trend & DOL (15m)
+  entry_tf: 5                         # Lower timeframe in minutes for sniper entries (5m)
+  enforce_bias_alignment: true        # If 15m is Bullish, 5m cannot take SELL signals (and vice-versa)
+  block_counter_trend: true          # Strictly reject signals fighting the 15m order flow
+  target_htf_liquidity: true         # Target 15m/Daily PDH/PDL for asymmetric 3:1+ R:R
+  htf_ema_len: 50                     # Period for 15m trend bias calculation
 
 htf_bias:
-  use_htf_bias: false
-  htf_bias_tf: "30m"
+  use_htf_bias: true
+  htf_bias_tf: "15m"
   htf_bias_strict: false
   htf_ema_len: 50
 
@@ -66,6 +78,49 @@ ipda:
   consol_lookback: 10
   consol_atr_mult: 1.5
 
+# Traditional ICT Model Configuration
+traditional_ict:
+  enabled: true                     # Config key 'traditionalICT' or 'enabled' (true = strict, false = legacy)
+  use_ifvg: true                    # Enable Inverse Fair Value Gaps (IFVG) on displacement body close
+  require_liquidity_sweep: true     # OB must originate from a liquidity sweep
+  require_displacement_fvg: true    # Displacement leg must leave a valid FVG
+  require_rejection_candle: true    # Enter on confirmed rejection, not blind touch
+  min_rejection_wick_pct: 20.0      # Min wick % defending the zone
+  respect_mean_threshold: true      # Bar close cannot breach 50% MT / CE
+  max_setup_bars: 25                # Max bars from sweep to retest
+
+# Institutional ICT Trade Management (Pro Desk Trader Brain)
+trade_management:
+  mode: "ict_pro"                     # Options: "ict_pro" (human desk trader) or "mechanical" (rigid TP/SL)
+  enable_breakeven_at_1r: true        # Move SL to Breakeven at +1.0R (eliminate open risk)
+  breakeven_trigger_r: 1.0            # R-multiple expansion to trigger BE move (e.g. 1.0)
+  enable_near_tp_lock: true           # Harvest profits if price reaches near TP and stalls/rejects
+  near_tp_threshold_pct: 85.0         # Proximity threshold % of target distance (85-90%)
+  rejection_stall_wick_pct: 20.0      # Rejection wick % indicating target absorption / stall
+  allow_pyramiding_if_risk_free: true # Allow setup stacking (e.g. SB on top of Unicorn) only if primary trade is risk-free at BE
+  enable_time_boxed_exit: true        # Exit Silver Bullet trades when Killzone expires
+
+# Judas Swing Model (Opening Range Manipulation) - Disabled based on 1-year data (-₹35k drag on 5m)
+judas_swing:
+  enabled: false                      # Disabled: 5m Nifty morning trend days cause fakeout re-expansions
+  window: "09:20-09:50"               # IST opening manipulation window
+  opening_range_bars: 1               # Number of bars defining Initial Balance (09:15 candle)
+  min_reversal_displacement: true    # Require decisive body reversal back inside
+
+# Turtle Soup Model (HTF Key Liquidity False Breakout)
+turtle_soup:
+  enabled: true                       # Enable Turtle Soup sweep & fade model
+  sweep_targets: ["PDH", "PDL", "PWH", "PWL"] # HTF levels monitored
+  min_rejection_wick_pct: 25.0        # Rejection wick % confirming false breakout
+  require_close_inside: true          # Candle body must close inside swept level
+
+# Institutional ICT Agent Brain (Confluence Scoring & Quality Grading)
+agent_brain:
+  enable_confluence_filter: true      # Filter low-grade signals (Trade only A/A+ setups)
+  min_confluence_score: 75            # Minimum score out of 100 to trigger live/paper execution
+  require_killzone_alignment: true    # Ensure setup aligns with institutional Killzone
+
+
 telegram:
   enabled: true
   timeframe_only: "15m"
@@ -78,8 +133,12 @@ telegram:
     - TP_HIT
     - SL_HIT
     - TIME_BOXED_EXIT
+    - BREAKEVEN_MOVE
+    - NEAR_TP_LOCK
+    - PYRAMID_ENTRY
 
 upstox:
   api_base: "https://api.upstox.com/v2"
   access_token: "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI4NTEwOTgiLCJqdGkiOiI2YTRlOGViMjY2YjM1OTJkOTI0NzRjODgiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6dHJ1ZSwiaXNFeHRlbmRlZCI6dHJ1ZSwiaWF0IjoxNzgzNTMzMjM0LCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE4MTUwODQwMDB9.X4twV9T754kWm7h09GmEe_7OavbGGC4hG1nlKSUrpR0"
   mock_replay: false
+

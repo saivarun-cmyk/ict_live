@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import zoneinfo
 
-from .models import Candle, SwingPoint, LiquidityLevel, FVG, OrderBlock, SignalResult
+from .models import Candle, SwingPoint, LiquidityLevel, FVG, OrderBlock, SignalResult, JudasSwingEvent, TurtleSoupEvent
 from .indicator_math import compute_atr, compute_ema
 from .sessions import is_in_session
 
@@ -65,15 +65,26 @@ class ICTPredictiveEngine:
         
         # Killzones settings
         kz_cfg = config.get("killzones", {})
-        self.use_killzone = kz_cfg.get("use_killzone", True)
-        self.killzone1 = kz_cfg.get("killzone1", "09:15-10:30")
-        self.killzone2 = kz_cfg.get("killzone2", "13:30-15:00")
+        self.use_killzone    = kz_cfg.get("use_killzone", True)
+        self.killzone1       = kz_cfg.get("killzone1", "09:20-10:30")
+        self.killzone2       = kz_cfg.get("killzone2", "13:30-15:00")
+        self.skip_open_bar   = kz_cfg.get("skip_open_bar", True)   # Block the 09:15 candle
+        self.strict_killzone = kz_cfg.get("strict_killzone", True)  # No OOK signals
         
+        # Multi-Timeframe (MTF) settings
+        mtf_cfg = config.get("multi_timeframe", {})
+        self.use_mtf = mtf_cfg.get("enabled", False)
+        self.mtf_narrative_tf = int(mtf_cfg.get("narrative_tf", 15))
+        self.mtf_entry_tf = int(mtf_cfg.get("entry_tf", 5))
+        self.mtf_enforce_bias = mtf_cfg.get("enforce_bias_alignment", True)
+        self.mtf_block_counter = mtf_cfg.get("block_counter_trend", True)
+        self.mtf_target_htf = mtf_cfg.get("target_htf_liquidity", True)
+
         # HTF Bias settings
         htf_bias_cfg = config.get("htf_bias", {})
-        self.use_htf_bias = htf_bias_cfg.get("use_htf_bias", False)
+        self.use_htf_bias = htf_bias_cfg.get("use_htf_bias", self.use_mtf)
         self.htf_bias_strict = htf_bias_cfg.get("htf_bias_strict", False)
-        self.htf_ema_len = htf_bias_cfg.get("htf_ema_len", 50)
+        self.htf_ema_len = int(mtf_cfg.get("htf_ema_len", htf_bias_cfg.get("htf_ema_len", 50)))
         
         # CISD settings
         cisd_cfg = config.get("cisd", {})
@@ -98,6 +109,208 @@ class ICTPredictiveEngine:
         self.consol_lookback = ipda_cfg.get("consol_lookback", 10)
         self.consol_atr_mult = ipda_cfg.get("consol_atr_mult", 1.5)
 
+        # Traditional ICT settings (strict OB validation, FVG quality, setup chaining, confirmed rejection)
+        trad_cfg = config.get("traditional_ict")
+        if trad_cfg is None:
+            trad_cfg = config.get("traditionalICT", {})
+
+        if isinstance(trad_cfg, bool):
+            self.traditional_ict = trad_cfg
+            self.trad_require_sweep = trad_cfg
+            self.trad_require_fvg = trad_cfg
+            self.trad_require_rejection = trad_cfg
+            self.trad_min_wick_pct = 20.0
+            self.trad_respect_mean_threshold = True
+            self.trad_max_setup_bars = 25
+            self.use_ifvg = True
+        elif isinstance(trad_cfg, dict):
+            self.traditional_ict = trad_cfg.get("enabled", trad_cfg.get("traditionalICT", False))
+            self.trad_require_sweep = trad_cfg.get("require_liquidity_sweep", True)
+            self.trad_require_fvg = trad_cfg.get("require_displacement_fvg", True)
+            self.trad_require_rejection = trad_cfg.get("require_rejection_candle", True)
+            self.trad_min_wick_pct = float(trad_cfg.get("min_rejection_wick_pct", 20.0))
+            self.trad_respect_mean_threshold = trad_cfg.get("respect_mean_threshold", True)
+            self.trad_max_setup_bars = int(trad_cfg.get("max_setup_bars", 25))
+            self.use_ifvg = trad_cfg.get("use_ifvg", True)
+        else:
+            self.traditional_ict = False
+            self.trad_require_sweep = False
+            self.trad_require_fvg = False
+            self.trad_require_rejection = False
+            self.trad_min_wick_pct = 20.0
+            self.trad_respect_mean_threshold = False
+            self.trad_max_setup_bars = 25
+            self.use_ifvg = zones_cfg.get("use_ifvg", True)
+
+        # Judas Swing settings
+        js_cfg = config.get("judas_swing", {})
+        self.use_judas_swing = js_cfg.get("enabled", True)
+        self.judas_window = js_cfg.get("window", "09:20-09:50")
+        self.judas_opening_bars = int(js_cfg.get("opening_range_bars", 1))
+
+        # Turtle Soup settings
+        ts_cfg = config.get("turtle_soup", {})
+        self.use_turtle_soup = ts_cfg.get("enabled", True)
+        self.ts_targets = ts_cfg.get("sweep_targets", ["PDH", "PDL", "PWH", "PWL"])
+        self.ts_min_wick_pct = float(ts_cfg.get("min_rejection_wick_pct", 25.0))
+        self.ts_require_close_inside = ts_cfg.get("require_close_inside", True)
+
+        # Institutional ICT Agent Brain (Confluence Scoring & Quality Grading)
+        brain_cfg = config.get("agent_brain", {})
+        self.enable_confluence_filter = brain_cfg.get("enable_confluence_filter", True)
+        self.min_confluence_score = int(brain_cfg.get("min_confluence_score", 75))
+
+    def _score_signal(
+        self,
+        signal_dir: str,
+        model: str,
+        tier: str,
+        in_killzone: bool,
+        htf_bias: str,
+        cisd_state: str,
+        wick_pct: float,
+        mt_defended: bool,
+        is_breaker: bool = False,
+        is_ifvg: bool = False
+    ) -> Tuple[int, str, List[str]]:
+        """
+        Institutional ICT Confluence Scoring Engine (The Agent Brain).
+        Evaluates setup quality from 0 to 100 based on 5 pillars:
+          1. HTF Draw on Liquidity (DOL) & Bias alignment (max 25)
+          2. Model Confluence (Unicorn, Judas, Turtle Soup, Silver Bullet) (max 25)
+          3. Liquidity Sweep Significance (PDH, PDL, PWH, PWL, EQH, EQL) (max 20)
+          4. Candle Rejection & 50% MT/CE Defense (max 15)
+          5. Killzone / Session Timing (max 15)
+        Returns (score, grade, factors).
+        """
+        score = 0
+        factors = []
+
+        # 1. HTF DOL & Bias Alignment (max 25)
+        if (signal_dir == "BUY" and htf_bias == "BULLISH") or (signal_dir == "SELL" and htf_bias == "BEARISH"):
+            score += 25
+            factors.append(f"HTF Bias Alignment ({htf_bias})")
+        elif htf_bias == "NEUTRAL":
+            score += 15
+            factors.append("Neutral HTF (Intraday Independence)")
+        else:
+            factors.append(f"Counter-Trend vs HTF ({htf_bias})")
+
+        # 2. Model Confluence Tier (max 25)
+        if "Unicorn" in model or (is_breaker and is_ifvg):
+            score += 25
+            factors.append("A+ Unicorn Model (Breaker + IFVG)")
+        elif "Judas Swing" in model:
+            score += 23
+            factors.append("Judas Swing Trap Reversal")
+        elif "Turtle Soup" in model:
+            score += 22
+            factors.append("Turtle Soup HTF False Breakout")
+        elif "Silver Bullet" in model:
+            score += 20
+            factors.append("Silver Bullet KZ Displacement")
+        elif "2022" in model:
+            score += 18
+            factors.append("Classic 2022 Model")
+        else:
+            score += 12
+            factors.append("Standard Structure Retest")
+
+        # 3. Liquidity Sweep Significance (max 20)
+        is_htf_sweep = any(k in tier for k in ["PDH", "PDL", "PWH", "PWL", "PMH", "PML"])
+        is_eq_sweep = any(k in tier for k in ["EQH", "EQL"])
+        if is_htf_sweep:
+            score += 20
+            factors.append(f"Major HTF Liquidity Swept ({tier})")
+        elif is_eq_sweep:
+            score += 16
+            factors.append(f"Equal Liquidity Pool Swept ({tier})")
+        elif "Opening Range" in tier or "Judas" in model:
+            score += 18
+            factors.append("Opening Range Trapped Liquidity")
+        else:
+            score += 10
+            factors.append(f"Internal Swing Swept ({tier})")
+
+        # 4. Candle Rejection & 50% MT/CE Defense (max 15)
+        if mt_defended and wick_pct >= 30.0:
+            score += 15
+            factors.append(f"Elite MT Defense (Wick {wick_pct:.0f}%)")
+        elif mt_defended and wick_pct >= 20.0:
+            score += 12
+            factors.append(f"Confirmed MT Defense (Wick {wick_pct:.0f}%)")
+        elif wick_pct >= 20.0:
+            score += 8
+            factors.append(f"Rejection Wick ({wick_pct:.0f}%)")
+        else:
+            score += 5
+            factors.append("Directional Close Defense")
+
+        # 5. Killzone / Session Timing (max 15)
+        if in_killzone:
+            score += 15
+            factors.append("Active ICT Killzone")
+        else:
+            score += 5
+            factors.append("Off-Killzone Timing")
+
+        # CISD extra boost
+        if (signal_dir == "BUY" and cisd_state == "BULLISH") or (signal_dir == "SELL" and cisd_state == "BEARISH"):
+            score = min(100, score + 5)
+            factors.append("CISD State Confirmed")
+
+        # Assign Grade
+        if score >= 85:
+            grade = "A+"
+        elif score >= 75:
+            grade = "A"
+        elif score >= 60:
+            grade = "B"
+        else:
+            grade = "C"
+
+        return score, grade, factors
+
+    def _check_rejection(self, c: Candle, zone_top: float, zone_bot: float, is_bullish: bool) -> bool:
+        """
+        Validates whether the candle confirmed a proper rejection from the zone:
+        1. Does not breach 50% Mean Threshold / Consequent Encroachment with candle body.
+        2. Leaves a rejection wick in the direction of trade, or prints a strong directional close.
+        """
+        if not self.trad_require_rejection:
+            return True
+
+        bar_range = c.high - c.low
+        if bar_range <= 0:
+            return False
+
+        zone_mid = (zone_top + zone_bot) / 2.0
+
+        if is_bullish:
+            # Respect Mean Threshold: candle body close should be at or above midpoint
+            if self.trad_respect_mean_threshold and c.close < zone_mid:
+                return False
+            # Check for lower rejection wick or strong green close
+            lower_wick = min(c.open, c.close) - c.low
+            wick_pct = (lower_wick / bar_range) * 100.0
+            if wick_pct >= self.trad_min_wick_pct:
+                return True
+            if c.close > c.open and c.close >= zone_mid:
+                return True
+            return False
+        else:
+            # Bearish: close should be at or below midpoint
+            if self.trad_respect_mean_threshold and c.close > zone_mid:
+                return False
+            # Check for upper rejection wick or strong red close
+            upper_wick = c.high - max(c.open, c.close)
+            wick_pct = (upper_wick / bar_range) * 100.0
+            if wick_pct >= self.trad_min_wick_pct:
+                return True
+            if c.close < c.open and c.close <= zone_mid:
+                return True
+            return False
+
     def _fvg_tier_rank(self, tier: str) -> int:
         if tier == "Highest Probability":
             return 3
@@ -117,8 +330,10 @@ class ICTPredictiveEngine:
     def _entry_model_name(self, tier: str, zone_type: str, in_kz1: bool) -> str:
         is_htf = any(k in tier for k in ["PDH", "PDL", "PWH", "PWL", "PMH", "PML"])
         is_eq = any(k in tier for k in ["EQH", "EQL"])
-        if zone_type == "Breaker" and (is_htf or is_eq):
+        if zone_type == "Unicorn" or (zone_type == "Breaker" and (is_htf or is_eq)):
             return "Unicorn Model"
+        elif zone_type == "IFVG":
+            return "Inverse FVG Model"
         elif in_kz1 and zone_type == "FVG":
             return "Silver Bullet Model"
         elif is_htf:
@@ -131,7 +346,9 @@ class ICTPredictiveEngine:
 
     def _exit_model_text(self, model: str) -> str:
         if model == "Unicorn Model":
-            return "Hold full size to TP - highest conviction (Breaker + strong liquidity)."
+            return "Hold full size to TP - highest conviction (Breaker + IFVG confluence)."
+        elif model == "Inverse FVG Model":
+            return "Exit at TP; invalidate early if price closes back through the IFVG boundary."
         elif model == "Silver Bullet Model":
             return "Time-boxed: exit by end of this Killzone hour even if TP not hit yet."
         elif model == "Turtle Soup Model":
@@ -152,11 +369,22 @@ class ICTPredictiveEngine:
 
         atr_series = compute_atr(candles, self.atr_len)
 
+        # Multi-Timeframe Auto-Aggregation if not explicitly passed
+        if (htf_candles is None or len(htf_candles) == 0) and self.use_mtf and n >= 6:
+            try:
+                from ..data.candle_builder import aggregate_candles
+                htf_candles = aggregate_candles(candles, target_minutes=self.mtf_narrative_tf)
+            except Exception:
+                htf_candles = None
+
         # HTF Bias EMA evaluation
         htf_bias = "NEUTRAL"
-        if htf_candles and len(htf_candles) >= self.htf_ema_len:
+        htf_closes = []
+        htf_emas = []
+        if htf_candles and len(htf_candles) >= 5:
+            ema_len = min(self.htf_ema_len, len(htf_candles))
             htf_closes = [c.close for c in htf_candles]
-            htf_emas = compute_ema(htf_closes, self.htf_ema_len)
+            htf_emas = compute_ema(htf_closes, ema_len)
             if htf_closes[-1] > htf_emas[-1]:
                 htf_bias = "BULLISH"
             elif htf_closes[-1] < htf_emas[-1]:
@@ -176,6 +404,18 @@ class ICTPredictiveEngine:
         pdh = daily_highs[sorted_days[-2]] if len(sorted_days) >= 2 else None
         pdl = daily_lows[sorted_days[-2]] if len(sorted_days) >= 2 else None
 
+        weekly_highs: Dict[str, float] = {}
+        weekly_lows: Dict[str, float] = {}
+        for c in candles:
+            dt = datetime.fromtimestamp(c.timestamp, tz=IST)
+            week_key = dt.strftime("%Y-%W")
+            weekly_highs[week_key] = max(weekly_highs.get(week_key, c.high), c.high)
+            weekly_lows[week_key] = min(weekly_lows.get(week_key, c.low), c.low)
+
+        sorted_weeks = sorted(weekly_highs.keys())
+        pwh = weekly_highs[sorted_weeks[-2]] if len(sorted_weeks) >= 2 else None
+        pwl = weekly_lows[sorted_weeks[-2]] if len(sorted_weeks) >= 2 else None
+
         # State variables
         last_sh: Optional[float] = None
         last_sh_bar: Optional[int] = None
@@ -193,6 +433,24 @@ class ICTPredictiveEngine:
 
         fvg_bull_list: List[FVG] = []
         fvg_bear_list: List[FVG] = []
+
+        ifvg_bull_list: List[FVG] = []
+        ifvg_bear_list: List[FVG] = []
+
+        # Judas Swing state
+        current_day_str: Optional[str] = None
+        or_high: Optional[float] = None
+        or_low: Optional[float] = None
+        or_recorded: bool = False
+        or_bar_count: int = 0
+        judas_bull_armed: bool = False
+        judas_bear_armed: bool = False
+        judas_fakeout_high: Optional[float] = None
+        judas_fakeout_low: Optional[float] = None
+        judas_fired_today: bool = False
+
+        # Turtle soup state
+        ts_fired_levels: set = set()
 
         # CISD state
         streak_len = 0
@@ -230,6 +488,8 @@ class ICTPredictiveEngine:
         # Signal results
         signals: List[Dict[str, Any]] = []
         silver_bullet_events: List[Dict[str, Any]] = []
+        judas_swing_events: List[Dict[str, Any]] = []
+        turtle_soup_events: List[Dict[str, Any]] = []
 
         bias_state = "NEUTRAL"
         current_signal = "HOLD"
@@ -248,9 +508,53 @@ class ICTPredictiveEngine:
             dt = datetime.fromtimestamp(c.timestamp, tz=IST)
             atr_val = atr_series[bar_idx]
 
+            day_str = dt.strftime("%Y-%m-%d")
+            if day_str != current_day_str:
+                current_day_str = day_str
+                or_high = None
+                or_low = None
+                or_recorded = False
+                or_bar_count = 0
+                judas_bull_armed = False
+                judas_bear_armed = False
+                judas_fakeout_high = None
+                judas_fakeout_low = None
+                judas_fired_today = False
+                ts_fired_levels.clear()
+
+            # Record Opening Range (typically the 09:15-09:20 opening candle(s))
+            if not or_recorded:
+                if (dt.hour == 9 and dt.minute >= 15) or dt.hour > 9:
+                    if or_high is None:
+                        or_high = c.high
+                        or_low = c.low
+                    else:
+                        or_high = max(or_high, c.high)
+                        or_low = min(or_low, c.low)
+                    or_bar_count += 1
+                    if or_bar_count >= self.judas_opening_bars:
+                        or_recorded = True
+
             in_kz1 = is_in_session(dt, self.killzone1)
             in_kz2 = is_in_session(dt, self.killzone2)
-            in_killzone = not self.use_killzone or in_kz1 or in_kz2
+
+            # Skip the literal 09:15 opening candle if configured
+            is_open_bar = (dt.hour == 9 and dt.minute == 15)
+            if self.skip_open_bar and is_open_bar:
+                in_kz1 = False
+                in_kz2 = False
+
+            # Killzone gate:
+            #   strict_killzone=True  → signals ONLY fire inside KZ1 or KZ2
+            #   strict_killzone=False → signals fire anywhere (OOK allowed)
+            #   use_killzone=False    → killzone gate fully disabled
+            if not self.use_killzone:
+                in_killzone = True
+            elif self.strict_killzone:
+                in_killzone = in_kz1 or in_kz2
+            else:
+                in_killzone = True   # OOK signals allowed (legacy behaviour)
+
             in_sb_window = in_kz1 or (self.sb_use_kz2_too and in_kz2)
 
             # ----------------------------------------------------
@@ -369,22 +673,73 @@ class ICTPredictiveEngine:
                     if len(fvg_bear_list) > self.max_zones:
                         fvg_bear_list.pop(0)
 
-            # FVG Mitigation + CE early failure
+            # FVG Mitigation + CE early failure + Polarity Inversion into IFVG
             for f in fvg_bull_list:
                 ce = (f.top + f.bottom) / 2.0
-                if c.close < f.bottom:
+                if not f.mitigated and c.close < f.bottom:
                     f.mitigated = True
                     f.mitigated_bar = bar_idx
+                    # Decisive body close below Bullish FVG -> Invert to Bearish IFVG
+                    if self.use_ifvg and not f.excluded_fake:
+                        ifvg_bear_list.append(FVG(
+                            top=f.top,
+                            bottom=f.bottom,
+                            bar_index=f.bar_index,
+                            is_bullish=False,
+                            tier=f.tier,
+                            c3_consolidating=f.c3_consolidating,
+                            has_confluence=f.has_confluence,
+                            c1_high=f.c1_high,
+                            c1_low=f.c1_low,
+                            c3_high=f.c3_high,
+                            c3_low=f.c3_low,
+                            is_inverse=True,
+                            inverted_bar=bar_idx,
+                            original_bullish=True
+                        ))
+                        if len(ifvg_bear_list) > self.max_zones:
+                            ifvg_bear_list.pop(0)
                 elif self.use_fvg_quality and not f.excluded_fake and (bar_idx - f.bar_index) <= self.fvg_fail_watch_bars and c.close < ce:
                     f.excluded_fake = True
 
             for f in fvg_bear_list:
                 ce = (f.top + f.bottom) / 2.0
-                if c.close > f.top:
+                if not f.mitigated and c.close > f.top:
                     f.mitigated = True
                     f.mitigated_bar = bar_idx
+                    # Decisive body close above Bearish FVG -> Invert to Bullish IFVG
+                    if self.use_ifvg and not f.excluded_fake:
+                        ifvg_bull_list.append(FVG(
+                            top=f.top,
+                            bottom=f.bottom,
+                            bar_index=f.bar_index,
+                            is_bullish=True,
+                            tier=f.tier,
+                            c3_consolidating=f.c3_consolidating,
+                            has_confluence=f.has_confluence,
+                            c1_high=f.c1_high,
+                            c1_low=f.c1_low,
+                            c3_high=f.c3_high,
+                            c3_low=f.c3_low,
+                            is_inverse=True,
+                            inverted_bar=bar_idx,
+                            original_bullish=False
+                        ))
+                        if len(ifvg_bull_list) > self.max_zones:
+                            ifvg_bull_list.pop(0)
                 elif self.use_fvg_quality and not f.excluded_fake and (bar_idx - f.bar_index) <= self.fvg_fail_watch_bars and c.close > ce:
                     f.excluded_fake = True
+
+            # Invalidate active IFVGs if price closes completely back through them
+            for ifvg in ifvg_bull_list:
+                if not ifvg.mitigated and c.close < ifvg.bottom:
+                    ifvg.mitigated = True
+                    ifvg.mitigated_bar = bar_idx
+
+            for ifvg in ifvg_bear_list:
+                if not ifvg.mitigated and c.close > ifvg.top:
+                    ifvg.mitigated = True
+                    ifvg.mitigated_bar = bar_idx
 
             # ----------------------------------------------------
             # 3. ORDER BLOCKS (OB) & BREAKERS
@@ -393,11 +748,26 @@ class ICTPredictiveEngine:
             if last_sh is not None and c.close > last_sh and not bos_up_done:
                 bos_up_done = True
                 last_bos_up_bar = bar_idx
+                # Check if this BOS originated from a recent liquidity sweep
+                sweep_occurred = (bull_sweep_bar is not None and (bar_idx - bull_sweep_bar) <= self.trad_max_setup_bars)
+                ref_bar = bull_sweep_bar if sweep_occurred else (bar_idx - self.ob_search_bars)
+                fvg_formed = any(f.bar_index >= ref_bar for f in fvg_bull_list)
+
                 # Search back for last red candle
                 for back_i in range(1, min(self.ob_search_bars + 1, bar_idx)):
                     cand = candles[bar_idx - back_i]
                     if cand.close < cand.open:
-                        ob_bull_list.append(OrderBlock(top=cand.high, bottom=cand.low, bar_index=bar_idx - back_i, is_bullish=True))
+                        ob_bull_list.append(OrderBlock(
+                            top=cand.high,
+                            bottom=cand.low,
+                            bar_index=bar_idx - back_i,
+                            is_bullish=True,
+                            has_sweep=sweep_occurred,
+                            has_fvg=fvg_formed,
+                            sweep_price=bull_sweep_level if sweep_occurred else None,
+                            sweep_bar=bull_sweep_bar if sweep_occurred else None,
+                            displacement_bar=bar_idx
+                        ))
                         if len(ob_bull_list) > self.max_zones:
                             ob_bull_list.pop(0)
                         break
@@ -406,11 +776,25 @@ class ICTPredictiveEngine:
             if last_sl is not None and c.close < last_sl and not bos_down_done:
                 bos_down_done = True
                 last_bos_down_bar = bar_idx
+                sweep_occurred_b = (bear_sweep_bar is not None and (bar_idx - bear_sweep_bar) <= self.trad_max_setup_bars)
+                ref_bar_b = bear_sweep_bar if sweep_occurred_b else (bar_idx - self.ob_search_bars)
+                fvg_formed_b = any(f.bar_index >= ref_bar_b for f in fvg_bear_list)
+
                 # Search back for last green candle
                 for back_i in range(1, min(self.ob_search_bars + 1, bar_idx)):
                     cand = candles[bar_idx - back_i]
                     if cand.close > cand.open:
-                        ob_bear_list.append(OrderBlock(top=cand.high, bottom=cand.low, bar_index=bar_idx - back_i, is_bullish=False))
+                        ob_bear_list.append(OrderBlock(
+                            top=cand.high,
+                            bottom=cand.low,
+                            bar_index=bar_idx - back_i,
+                            is_bullish=False,
+                            has_sweep=sweep_occurred_b,
+                            has_fvg=fvg_formed_b,
+                            sweep_price=bear_sweep_level if sweep_occurred_b else None,
+                            sweep_bar=bear_sweep_bar if sweep_occurred_b else None,
+                            displacement_bar=bar_idx
+                        ))
                         if len(ob_bear_list) > self.max_zones:
                             ob_bear_list.pop(0)
                         break
@@ -421,7 +805,17 @@ class ICTPredictiveEngine:
                     ob.mitigated = True
                     ob.mitigated_bar = bar_idx
                     if self.show_ob:
-                        ob_bear_list.append(OrderBlock(top=ob.top, bottom=ob.bottom, bar_index=bar_idx, is_bullish=False, is_breaker=True))
+                        ob_bear_list.append(OrderBlock(
+                            top=ob.top,
+                            bottom=ob.bottom,
+                            bar_index=bar_idx,
+                            is_bullish=False,
+                            is_breaker=True,
+                            has_sweep=ob.has_sweep,
+                            has_fvg=ob.has_fvg,
+                            sweep_price=ob.sweep_price,
+                            sweep_bar=ob.sweep_bar
+                        ))
                         if len(ob_bear_list) > self.max_zones:
                             ob_bear_list.pop(0)
 
@@ -430,7 +824,17 @@ class ICTPredictiveEngine:
                     ob.mitigated = True
                     ob.mitigated_bar = bar_idx
                     if self.show_ob:
-                        ob_bull_list.append(OrderBlock(top=ob.top, bottom=ob.bottom, bar_index=bar_idx, is_bullish=True, is_breaker=True))
+                        ob_bull_list.append(OrderBlock(
+                            top=ob.top,
+                            bottom=ob.bottom,
+                            bar_index=bar_idx,
+                            is_bullish=True,
+                            is_breaker=True,
+                            has_sweep=ob.has_sweep,
+                            has_fvg=ob.has_fvg,
+                            sweep_price=ob.sweep_price,
+                            sweep_bar=ob.sweep_bar
+                        ))
                         if len(ob_bull_list) > self.max_zones:
                             ob_bull_list.pop(0)
 
@@ -511,11 +915,18 @@ class ICTPredictiveEngine:
                     bear_sweep_tier = "PDH (Daily Liquidity)"
                     pdh_swept = True
 
-            # Expire stale sweeps
-            if bull_sweep_active and bull_sweep_bar is not None and (bar_idx - bull_sweep_bar > self.sweep_valid_bars):
+            # Expire stale sweeps & invalidate on adverse close
+            max_sweep_bars = self.trad_max_setup_bars if self.traditional_ict else self.sweep_valid_bars
+            if bull_sweep_active and bull_sweep_bar is not None and (bar_idx - bull_sweep_bar > max_sweep_bars):
                 bull_sweep_active = False
-            if bear_sweep_active and bear_sweep_bar is not None and (bar_idx - bear_sweep_bar > self.sweep_valid_bars):
+            if bear_sweep_active and bear_sweep_bar is not None and (bar_idx - bear_sweep_bar > max_sweep_bars):
                 bear_sweep_active = False
+
+            if self.traditional_ict:
+                if bull_sweep_active and bull_sweep_level is not None and c.close < bull_sweep_level:
+                    bull_sweep_active = False
+                if bear_sweep_active and bear_sweep_level is not None and c.close > bear_sweep_level:
+                    bear_sweep_active = False
 
             # ----------------------------------------------------
             # 4b. DEDICATED SILVER BULLET MODEL
@@ -636,8 +1047,27 @@ class ICTPredictiveEngine:
                     ote_top2 = last_sl + ote_range * self.ote_max
                     is_premium_ok = (c.close >= ote_bottom2 and c.close <= ote_top2)
 
-            is_htf_ok_buy = not self.use_htf_bias or (htf_bias == "BULLISH" or (not self.htf_bias_strict and htf_bias == "NEUTRAL"))
-            is_htf_ok_sell = not self.use_htf_bias or (htf_bias == "BEARISH" or (not self.htf_bias_strict and htf_bias == "NEUTRAL"))
+            # Dynamic Multi-Timeframe (MTF) Bias evaluation
+            current_htf_bias = htf_bias
+            if htf_candles and htf_emas:
+                target_sec = self.mtf_narrative_tf * 60
+                last_closed_htf_idx = None
+                for h_idx in range(len(htf_candles) - 1, -1, -1):
+                    if c.timestamp >= (htf_candles[h_idx].timestamp + target_sec):
+                        last_closed_htf_idx = h_idx
+                        break
+                if last_closed_htf_idx is not None and last_closed_htf_idx < len(htf_emas):
+                    if htf_closes[last_closed_htf_idx] > htf_emas[last_closed_htf_idx]:
+                        current_htf_bias = "BULLISH"
+                    elif htf_closes[last_closed_htf_idx] < htf_emas[last_closed_htf_idx]:
+                        current_htf_bias = "BEARISH"
+
+            if self.use_mtf and self.mtf_block_counter:
+                is_htf_ok_buy = current_htf_bias in ("BULLISH", "NEUTRAL")
+                is_htf_ok_sell = current_htf_bias in ("BEARISH", "NEUTRAL")
+            else:
+                is_htf_ok_buy = not self.use_htf_bias or (current_htf_bias == "BULLISH" or (not self.htf_bias_strict and current_htf_bias == "NEUTRAL"))
+                is_htf_ok_sell = not self.use_htf_bias or (current_htf_bias == "BEARISH" or (not self.htf_bias_strict and current_htf_bias == "NEUTRAL"))
 
             buy_signal = False
             sell_signal = False
@@ -650,43 +1080,112 @@ class ICTPredictiveEngine:
                 # Check Bullish FVGs
                 for fvg in reversed(fvg_bull_list):
                     if not fvg.mitigated and (not self.use_fvg_quality or (not fvg.excluded_fake and self._fvg_tier_rank(fvg.tier) >= self._min_tier_rank())):
+                        if self.traditional_ict:
+                            # FVG must originate in current sweep setup window
+                            if bull_sweep_bar is not None and fvg.bar_index < bull_sweep_bar:
+                                continue
+                            if self._fvg_tier_rank(fvg.tier) < 2:
+                                continue
                         if c.low <= fvg.top and c.high >= fvg.bottom:
-                            zone_top = fvg.top
-                            zone_bot = fvg.bottom
-                            zone_type = "FVG"
-                            break
-                # Check Bullish OBs if no FVG touched
+                            if not self.traditional_ict or self._check_rejection(c, fvg.top, fvg.bottom, is_bullish=True):
+                                zone_top = fvg.top
+                                zone_bot = fvg.bottom
+                                zone_type = "FVG"
+                                break
+                # Check Bullish OBs if no FVG touched or confirmed
                 if zone_top is None:
                     for ob in reversed(ob_bull_list):
                         if not ob.mitigated and c.low <= ob.top and c.high >= ob.bottom:
-                            zone_top = ob.top
-                            zone_bot = ob.bottom
-                            zone_type = "Breaker" if ob.is_breaker else "OB"
-                            break
+                            if self.traditional_ict and not ob.is_breaker:
+                                ob_has_fvg = ob.has_fvg or any(f.bar_index >= ob.bar_index for f in fvg_bull_list)
+                                if self.trad_require_sweep and not ob.has_sweep:
+                                    continue
+                                if self.trad_require_fvg and not ob_has_fvg:
+                                    continue
+                                if bull_sweep_bar is not None and ob.bar_index < (bull_sweep_bar - 2):
+                                    continue
+                            if not self.traditional_ict or self._check_rejection(c, ob.top, ob.bottom, is_bullish=True):
+                                zone_top = ob.top
+                                zone_bot = ob.bottom
+                                zone_type = "Breaker" if ob.is_breaker else "OB"
+                                break
+
+                # Check Bullish IFVGs (Inverse FVGs) if no regular FVG or OB touched or confirmed
+                if zone_top is None and self.use_ifvg:
+                    for ifvg in reversed(ifvg_bull_list):
+                        if not ifvg.mitigated:
+                            if self.traditional_ict:
+                                if bull_sweep_bar is not None and ifvg.inverted_bar is not None and ifvg.inverted_bar < (bull_sweep_bar - 5):
+                                    continue
+                                if self._fvg_tier_rank(ifvg.tier) < 2:
+                                    continue
+                            if c.low <= ifvg.top and c.high >= ifvg.bottom:
+                                if not self.traditional_ict or self._check_rejection(c, ifvg.top, ifvg.bottom, is_bullish=True):
+                                    zone_top = ifvg.top
+                                    zone_bot = ifvg.bottom
+                                    # Unicorn model check: Breaker Block + IFVG confluence
+                                    has_breaker_conf = any(
+                                        ob.is_breaker and not (ob.top < ifvg.bottom or ob.bottom > ifvg.top)
+                                        for ob in ob_bull_list if not ob.mitigated
+                                    )
+                                    zone_type = "Unicorn" if has_breaker_conf else "IFVG"
+                                    break
 
                 if zone_top is not None:
                     entry_price = c.close
                     sl_price = float(round(min(zone_bot, bull_sweep_level or zone_bot) - atr_val * self.atr_buffer_mult, 2))
                     tp_price = float(round(entry_price + (entry_price - sl_price) * self.risk_reward, 2))
-                    buy_signal = True
-                    bull_signal_fired = True
-                    bull_sweep_active = False
-                    current_signal = "BUY"
+                    if self.mtf_target_htf:
+                        htf_target = pdh or pwh
+                        if htf_target is not None and htf_target > entry_price and htf_target > tp_price:
+                            tp_price = float(round(htf_target, 2))
                     last_entry_model = self._entry_model_name(bull_sweep_tier, zone_type, in_kz1)
-                    bias_state = "BULLISH"
 
-                    signals.append({
-                        "signal": "BUY",
-                        "bar_index": bar_idx,
-                        "time": c.timestamp,
-                        "entry_price": entry_price,
-                        "sl_price": sl_price,
-                        "tp_price": tp_price,
-                        "tier": bull_sweep_tier,
-                        "model": last_entry_model,
-                        "exit_plan": self._exit_model_text(last_entry_model),
-                        "cisd": cisd_state
-                    })
+                    # Confluence Scoring & Rejection metrics
+                    body = abs(c.close - c.open)
+                    total_range = c.high - c.low
+                    lower_wick = min(c.open, c.close) - c.low
+                    wick_pct = (lower_wick / total_range * 100.0) if total_range > 0 else 0.0
+                    mt_level = (zone_top + zone_bot) / 2.0
+                    mt_defended = c.close >= mt_level
+
+                    score, grade, factors = self._score_signal(
+                        signal_dir="BUY",
+                        model=last_entry_model,
+                        tier=bull_sweep_tier,
+                        in_killzone=in_killzone,
+                        htf_bias=htf_bias,
+                        cisd_state=cisd_state,
+                        wick_pct=wick_pct,
+                        mt_defended=mt_defended,
+                        is_breaker=(zone_type == "Breaker" or zone_type == "Unicorn"),
+                        is_ifvg=(zone_type == "IFVG" or zone_type == "Unicorn")
+                    )
+
+                    allow_signal = not self.enable_confluence_filter or score >= self.min_confluence_score
+
+                    if allow_signal:
+                        buy_signal = True
+                        bull_signal_fired = True
+                        bull_sweep_active = False
+                        current_signal = "BUY"
+                        bias_state = "BULLISH"
+
+                        signals.append({
+                            "signal": "BUY",
+                            "bar_index": bar_idx,
+                            "time": c.timestamp,
+                            "entry_price": entry_price,
+                            "sl_price": sl_price,
+                            "tp_price": tp_price,
+                            "tier": bull_sweep_tier,
+                            "model": last_entry_model,
+                            "exit_plan": self._exit_model_text(last_entry_model),
+                            "cisd": cisd_state,
+                            "confluence_score": score,
+                            "grade": grade,
+                            "confluence_factors": factors
+                        })
 
             # SELL evaluation
             if eval_bar and in_killzone and is_premium_ok and (not self.use_cisd or cisd_state == "BEARISH") and is_htf_ok_sell and bear_sweep_active and not bear_signal_fired:
@@ -696,43 +1195,364 @@ class ICTPredictiveEngine:
                 # Check Bearish FVGs
                 for fvg in reversed(fvg_bear_list):
                     if not fvg.mitigated and (not self.use_fvg_quality or (not fvg.excluded_fake and self._fvg_tier_rank(fvg.tier) >= self._min_tier_rank())):
+                        if self.traditional_ict:
+                            if bear_sweep_bar is not None and fvg.bar_index < bear_sweep_bar:
+                                continue
+                            if self._fvg_tier_rank(fvg.tier) < 2:
+                                continue
                         if c.low <= fvg.top and c.high >= fvg.bottom:
-                            zone_top_b = fvg.top
-                            zone_bot_b = fvg.bottom
-                            zone_type_b = "FVG"
-                            break
+                            if not self.traditional_ict or self._check_rejection(c, fvg.top, fvg.bottom, is_bullish=False):
+                                zone_top_b = fvg.top
+                                zone_bot_b = fvg.bottom
+                                zone_type_b = "FVG"
+                                break
                 # Check Bearish OBs
                 if zone_top_b is None:
                     for ob in reversed(ob_bear_list):
                         if not ob.mitigated and c.low <= ob.top and c.high >= ob.bottom:
-                            zone_top_b = ob.top
-                            zone_bot_b = ob.bottom
-                            zone_type_b = "Breaker" if ob.is_breaker else "OB"
-                            break
+                            if self.traditional_ict and not ob.is_breaker:
+                                ob_has_fvg = ob.has_fvg or any(f.bar_index >= ob.bar_index for f in fvg_bear_list)
+                                if self.trad_require_sweep and not ob.has_sweep:
+                                    continue
+                                if self.trad_require_fvg and not ob_has_fvg:
+                                    continue
+                                if bear_sweep_bar is not None and ob.bar_index < (bear_sweep_bar - 2):
+                                    continue
+                            if not self.traditional_ict or self._check_rejection(c, ob.top, ob.bottom, is_bullish=False):
+                                zone_top_b = ob.top
+                                zone_bot_b = ob.bottom
+                                zone_type_b = "Breaker" if ob.is_breaker else "OB"
+                                break
+
+                # Check Bearish IFVGs (Inverse FVGs) if no regular FVG or OB touched or confirmed
+                if zone_top_b is None and self.use_ifvg:
+                    for ifvg in reversed(ifvg_bear_list):
+                        if not ifvg.mitigated:
+                            if self.traditional_ict:
+                                if bear_sweep_bar is not None and ifvg.inverted_bar is not None and ifvg.inverted_bar < (bear_sweep_bar - 5):
+                                    continue
+                                if self._fvg_tier_rank(ifvg.tier) < 2:
+                                    continue
+                            if c.low <= ifvg.top and c.high >= ifvg.bottom:
+                                if not self.traditional_ict or self._check_rejection(c, ifvg.top, ifvg.bottom, is_bullish=False):
+                                    zone_top_b = ifvg.top
+                                    zone_bot_b = ifvg.bottom
+                                    # Unicorn model check: Breaker Block + IFVG confluence
+                                    has_breaker_conf_b = any(
+                                        ob.is_breaker and not (ob.top < ifvg.bottom or ob.bottom > ifvg.top)
+                                        for ob in ob_bear_list if not ob.mitigated
+                                    )
+                                    zone_type_b = "Unicorn" if has_breaker_conf_b else "IFVG"
+                                    break
 
                 if zone_top_b is not None:
                     entry_price = c.close
                     sl_price = float(round(max(zone_top_b, bear_sweep_level or zone_top_b) + atr_val * self.atr_buffer_mult, 2))
                     tp_price = float(round(entry_price - (sl_price - entry_price) * self.risk_reward, 2))
-                    sell_signal = True
-                    bear_signal_fired = True
-                    bear_sweep_active = False
-                    current_signal = "SELL"
+                    if self.mtf_target_htf:
+                        htf_target = pdl or pwl
+                        if htf_target is not None and htf_target < entry_price and htf_target < tp_price:
+                            tp_price = float(round(htf_target, 2))
                     last_entry_model = self._entry_model_name(bear_sweep_tier, zone_type_b, in_kz1)
-                    bias_state = "BEARISH"
 
-                    signals.append({
-                        "signal": "SELL",
-                        "bar_index": bar_idx,
-                        "time": c.timestamp,
-                        "entry_price": entry_price,
-                        "sl_price": sl_price,
-                        "tp_price": tp_price,
-                        "tier": bear_sweep_tier,
-                        "model": last_entry_model,
-                        "exit_plan": self._exit_model_text(last_entry_model),
-                        "cisd": cisd_state
-                    })
+                    # Confluence Scoring & Rejection metrics
+                    body = abs(c.close - c.open)
+                    total_range = c.high - c.low
+                    upper_wick = c.high - max(c.open, c.close)
+                    wick_pct = (upper_wick / total_range * 100.0) if total_range > 0 else 0.0
+                    mt_level_b = (zone_top_b + zone_bot_b) / 2.0
+                    mt_defended = c.close <= mt_level_b
+
+                    score, grade, factors = self._score_signal(
+                        signal_dir="SELL",
+                        model=last_entry_model,
+                        tier=bear_sweep_tier,
+                        in_killzone=in_killzone,
+                        htf_bias=htf_bias,
+                        cisd_state=cisd_state,
+                        wick_pct=wick_pct,
+                        mt_defended=mt_defended,
+                        is_breaker=(zone_type_b == "Breaker" or zone_type_b == "Unicorn"),
+                        is_ifvg=(zone_type_b == "IFVG" or zone_type_b == "Unicorn")
+                    )
+
+                    allow_signal = not self.enable_confluence_filter or score >= self.min_confluence_score
+
+                    if allow_signal:
+                        sell_signal = True
+                        bear_signal_fired = True
+                        bear_sweep_active = False
+                        current_signal = "SELL"
+                        bias_state = "BEARISH"
+
+                        signals.append({
+                            "signal": "SELL",
+                            "bar_index": bar_idx,
+                            "time": c.timestamp,
+                            "entry_price": entry_price,
+                            "sl_price": sl_price,
+                            "tp_price": tp_price,
+                            "tier": bear_sweep_tier,
+                            "model": last_entry_model,
+                            "exit_plan": self._exit_model_text(last_entry_model),
+                            "cisd": cisd_state,
+                            "confluence_score": score,
+                            "grade": grade,
+                            "confluence_factors": factors
+                        })
+
+            # ----------------------------------------------------
+            # 5b. JUDAS SWING MODEL (Opening Range Manipulation & Trap)
+            # ----------------------------------------------------
+            if self.use_judas_swing and eval_bar and or_recorded and not judas_fired_today:
+                in_judas_win = is_in_session(dt, self.judas_window)
+                if in_judas_win:
+                    # Arm fakeout traps when price breaches OR extremes
+                    if or_high is not None and c.high > or_high:
+                        judas_bear_armed = True
+                        judas_fakeout_high = max(judas_fakeout_high or or_high, c.high)
+
+                    if or_low is not None and c.low < or_low:
+                        judas_bull_armed = True
+                        judas_fakeout_low = min(judas_fakeout_low or or_low, c.low)
+
+                    # Bearish Judas Reversal: Breached OR High, then closed back below OR High
+                    if judas_bear_armed and or_high is not None and c.close < or_high and not sell_signal:
+                        body = abs(c.close - c.open)
+                        total_range = c.high - c.low
+                        upper_wick = c.high - max(c.open, c.close)
+                        wick_pct = (upper_wick / total_range * 100.0) if total_range > 0 else 0.0
+
+                        js_score, js_grade, js_factors = self._score_signal(
+                            signal_dir="SELL",
+                            model="Judas Swing Model",
+                            tier="Opening Range High Trap",
+                            in_killzone=True,
+                            htf_bias=htf_bias,
+                            cisd_state=cisd_state,
+                            wick_pct=wick_pct,
+                            mt_defended=True
+                        )
+
+                        if not self.enable_confluence_filter or js_score >= self.min_confluence_score:
+                            entry_price = c.close
+                            sl_price = float(round((judas_fakeout_high or c.high) + atr_val * self.atr_buffer_mult, 2))
+                            tp_price = float(round(entry_price - (sl_price - entry_price) * self.risk_reward, 2))
+                            sell_signal = True
+                            judas_fired_today = True
+                            judas_bear_armed = False
+                            current_signal = "SELL"
+                            last_entry_model = "Judas Swing Model"
+                            bias_state = "BEARISH"
+
+                            judas_swing_events.append({
+                                "type": "JUDAS_SWING_SELL",
+                                "bar_index": bar_idx,
+                                "time": c.timestamp,
+                                "entry_price": entry_price,
+                                "sl": sl_price,
+                                "tp": tp_price,
+                                "score": js_score,
+                                "grade": js_grade
+                            })
+
+                            signals.append({
+                                "signal": "SELL",
+                                "bar_index": bar_idx,
+                                "time": c.timestamp,
+                                "entry_price": entry_price,
+                                "sl_price": sl_price,
+                                "tp_price": tp_price,
+                                "tier": "Opening Range High Trap",
+                                "model": "Judas Swing Model",
+                                "exit_plan": "Exit at Opening Range Low / Target Liquidity",
+                                "cisd": cisd_state,
+                                "confluence_score": js_score,
+                                "grade": js_grade,
+                                "confluence_factors": js_factors
+                            })
+
+                    # Bullish Judas Reversal: Breached OR Low, then closed back above OR Low
+                    elif judas_bull_armed and or_low is not None and c.close > or_low and not buy_signal:
+                        body = abs(c.close - c.open)
+                        total_range = c.high - c.low
+                        lower_wick = min(c.open, c.close) - c.low
+                        wick_pct = (lower_wick / total_range * 100.0) if total_range > 0 else 0.0
+
+                        js_score, js_grade, js_factors = self._score_signal(
+                            signal_dir="BUY",
+                            model="Judas Swing Model",
+                            tier="Opening Range Low Trap",
+                            in_killzone=True,
+                            htf_bias=htf_bias,
+                            cisd_state=cisd_state,
+                            wick_pct=wick_pct,
+                            mt_defended=True
+                        )
+
+                        if not self.enable_confluence_filter or js_score >= self.min_confluence_score:
+                            entry_price = c.close
+                            sl_price = float(round((judas_fakeout_low or c.low) - atr_val * self.atr_buffer_mult, 2))
+                            tp_price = float(round(entry_price + (entry_price - sl_price) * self.risk_reward, 2))
+                            buy_signal = True
+                            judas_fired_today = True
+                            judas_bull_armed = False
+                            current_signal = "BUY"
+                            last_entry_model = "Judas Swing Model"
+                            bias_state = "BULLISH"
+
+                            judas_swing_events.append({
+                                "type": "JUDAS_SWING_BUY",
+                                "bar_index": bar_idx,
+                                "time": c.timestamp,
+                                "entry_price": entry_price,
+                                "sl": sl_price,
+                                "tp": tp_price,
+                                "score": js_score,
+                                "grade": js_grade
+                            })
+
+                            signals.append({
+                                "signal": "BUY",
+                                "bar_index": bar_idx,
+                                "time": c.timestamp,
+                                "entry_price": entry_price,
+                                "sl_price": sl_price,
+                                "tp_price": tp_price,
+                                "tier": "Opening Range Low Trap",
+                                "model": "Judas Swing Model",
+                                "exit_plan": "Exit at Opening Range High / Target Liquidity",
+                                "cisd": cisd_state,
+                                "confluence_score": js_score,
+                                "grade": js_grade,
+                                "confluence_factors": js_factors
+                            })
+
+            # ----------------------------------------------------
+            # 5c. TURTLE SOUP MODEL (HTF Liquidity False Breakout)
+            # ----------------------------------------------------
+            if self.use_turtle_soup and eval_bar and (not self.use_killzone or in_killzone):
+                # Bearish Turtle Soup (Sweep PDH / PWH)
+                ts_bear_targets = [("PDH", pdh), ("PWH", pwh)]
+                for lvl_name, lvl_val in ts_bear_targets:
+                    if lvl_val is not None and lvl_name in self.ts_targets and lvl_name not in ts_fired_levels:
+                        if c.high > lvl_val:
+                            closed_inside = (not self.ts_require_close_inside) or (c.close < lvl_val)
+                            total_range = c.high - c.low
+                            upper_wick = c.high - max(c.open, c.close)
+                            wick_pct = (upper_wick / total_range * 100.0) if total_range > 0 else 0.0
+
+                            if closed_inside and wick_pct >= self.ts_min_wick_pct and not sell_signal:
+                                ts_score, ts_grade, ts_factors = self._score_signal(
+                                    signal_dir="SELL",
+                                    model="Turtle Soup Model",
+                                    tier=lvl_name,
+                                    in_killzone=in_killzone,
+                                    htf_bias=htf_bias,
+                                    cisd_state=cisd_state,
+                                    wick_pct=wick_pct,
+                                    mt_defended=True
+                                )
+
+                                if not self.enable_confluence_filter or ts_score >= self.min_confluence_score:
+                                    entry_price = c.close
+                                    sl_price = float(round(c.high + atr_val * self.atr_buffer_mult, 2))
+                                    tp_price = float(round(entry_price - (sl_price - entry_price) * self.risk_reward, 2))
+                                    sell_signal = True
+                                    current_signal = "SELL"
+                                    last_entry_model = f"Turtle Soup Model ({lvl_name})"
+                                    bias_state = "BEARISH"
+                                    ts_fired_levels.add(lvl_name)
+
+                                    turtle_soup_events.append({
+                                        "type": f"TURTLE_SOUP_SELL_{lvl_name}",
+                                        "bar_index": bar_idx,
+                                        "time": c.timestamp,
+                                        "level": lvl_val,
+                                        "entry_price": entry_price,
+                                        "sl": sl_price,
+                                        "tp": tp_price,
+                                        "score": ts_score,
+                                        "grade": ts_grade
+                                    })
+
+                                    signals.append({
+                                        "signal": "SELL",
+                                        "bar_index": bar_idx,
+                                        "time": c.timestamp,
+                                        "entry_price": entry_price,
+                                        "sl_price": sl_price,
+                                        "tp_price": tp_price,
+                                        "tier": lvl_name,
+                                        "model": f"Turtle Soup Model ({lvl_name})",
+                                        "exit_plan": f"Turtle Soup: target opposite equilibrium / {lvl_name} rejection",
+                                        "cisd": cisd_state,
+                                        "confluence_score": ts_score,
+                                        "grade": ts_grade,
+                                        "confluence_factors": ts_factors
+                                    })
+                                    break
+
+                # Bullish Turtle Soup (Sweep PDL / PWL)
+                ts_bull_targets = [("PDL", pdl), ("PWL", pwl)]
+                for lvl_name, lvl_val in ts_bull_targets:
+                    if lvl_val is not None and lvl_name in self.ts_targets and lvl_name not in ts_fired_levels:
+                        if c.low < lvl_val:
+                            closed_inside = (not self.ts_require_close_inside) or (c.close > lvl_val)
+                            total_range = c.high - c.low
+                            lower_wick = min(c.open, c.close) - c.low
+                            wick_pct = (lower_wick / total_range * 100.0) if total_range > 0 else 0.0
+
+                            if closed_inside and wick_pct >= self.ts_min_wick_pct and not buy_signal:
+                                ts_score, ts_grade, ts_factors = self._score_signal(
+                                    signal_dir="BUY",
+                                    model="Turtle Soup Model",
+                                    tier=lvl_name,
+                                    in_killzone=in_killzone,
+                                    htf_bias=htf_bias,
+                                    cisd_state=cisd_state,
+                                    wick_pct=wick_pct,
+                                    mt_defended=True
+                                )
+
+                                if not self.enable_confluence_filter or ts_score >= self.min_confluence_score:
+                                    entry_price = c.close
+                                    sl_price = float(round(c.low - atr_val * self.atr_buffer_mult, 2))
+                                    tp_price = float(round(entry_price + (entry_price - sl_price) * self.risk_reward, 2))
+                                    buy_signal = True
+                                    current_signal = "BUY"
+                                    last_entry_model = f"Turtle Soup Model ({lvl_name})"
+                                    bias_state = "BULLISH"
+                                    ts_fired_levels.add(lvl_name)
+
+                                    turtle_soup_events.append({
+                                        "type": f"TURTLE_SOUP_BUY_{lvl_name}",
+                                        "bar_index": bar_idx,
+                                        "time": c.timestamp,
+                                        "level": lvl_val,
+                                        "entry_price": entry_price,
+                                        "sl": sl_price,
+                                        "tp": tp_price,
+                                        "score": ts_score,
+                                        "grade": ts_grade
+                                    })
+
+                                    signals.append({
+                                        "signal": "BUY",
+                                        "bar_index": bar_idx,
+                                        "time": c.timestamp,
+                                        "entry_price": entry_price,
+                                        "sl_price": sl_price,
+                                        "tp_price": tp_price,
+                                        "tier": lvl_name,
+                                        "model": f"Turtle Soup Model ({lvl_name})",
+                                        "exit_plan": f"Turtle Soup: target opposite equilibrium / {lvl_name} rejection",
+                                        "cisd": cisd_state,
+                                        "confluence_score": ts_score,
+                                        "grade": ts_grade,
+                                        "confluence_factors": ts_factors
+                                    })
+                                    break
 
             # Bias ribbon reset on SL/TP hit
             if bias_state == "BULLISH" and sl_price is not None and tp_price is not None:
@@ -802,15 +1622,17 @@ class ICTPredictiveEngine:
         }
 
         # Serialized zones for frontend rendering
+        all_fvgs = fvg_bull_list + fvg_bear_list + ifvg_bull_list + ifvg_bear_list
         fvg_payload = [
             {
                 "top": f.top,
                 "bottom": f.bottom,
-                "start_bar": max(0, f.bar_index - 2),
-                "end_bar": min(n - 1, f.bar_index + 20),
+                "start_bar": max(0, (f.inverted_bar if f.is_inverse and f.inverted_bar is not None else f.bar_index) - 2),
+                "end_bar": min(n - 1, (f.inverted_bar if f.is_inverse and f.inverted_bar is not None else f.bar_index) + 20),
                 "bar_index": f.bar_index,
                 "time": candles[f.bar_index].timestamp if f.bar_index < n else 0,
                 "is_bullish": f.is_bullish,
+                "is_inverse": f.is_inverse,
                 "tier": f.tier,
                 "mitigated": f.mitigated,
                 "excluded_fake": f.excluded_fake,
@@ -819,8 +1641,10 @@ class ICTPredictiveEngine:
                 "c3_high": f.c3_high,
                 "c3_low": f.c3_low
             }
-            for f in (fvg_bull_list + fvg_bear_list)
+            for f in all_fvgs
         ]
+
+        ifvg_payload = [f for f in fvg_payload if f.get("is_inverse")]
 
         ob_payload = [
             {
@@ -854,11 +1678,16 @@ class ICTPredictiveEngine:
             "dashboard": dashboard,
             "signals": signals,
             "silver_bullet_events": silver_bullet_events,
+            "judas_swing_events": judas_swing_events,
+            "turtle_soup_events": turtle_soup_events,
             "fvg_zones": fvg_payload,
+            "ifvg_zones": ifvg_payload,
             "order_blocks": ob_payload,
             "liquidity_levels": liquidity_payload,
             "pdh": pdh,
             "pdl": pdl,
+            "pwh": pwh,
+            "pwl": pwl,
             "active_trade": {
                 "entry_price": entry_price,
                 "sl_price": sl_price,
